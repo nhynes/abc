@@ -11,12 +11,12 @@ from .bottles import BottledLinear, BottledLogSoftmax
 class Generator(nn.Module):
     """An RNN token generator."""
 
-    def __init__(self, vocab_size, word_emb_dim, gen_dim,
+    def __init__(self, vocab_size, word_emb_dim, gen_dim, num_layers,
                  **unused_kwargs):
         super(Generator, self).__init__()
 
         self.word_emb = nn.Embedding(vocab_size, word_emb_dim, padding_idx=0)
-        self.gen_rnn = nn.LSTM(word_emb_dim, gen_dim)
+        self.gen_rnn = nn.LSTM(word_emb_dim, gen_dim, num_layers)
         self.word_dec = nn.Sequential(
             BottledLinear(gen_dim, vocab_size),
             BottledLogSoftmax(),

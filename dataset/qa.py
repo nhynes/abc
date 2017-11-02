@@ -34,10 +34,7 @@ class QADataset(torch.utils.data.Dataset):
             qtoks[i] = self.vocab[tok]
         qtoks[len(toks)] = self.vocab[EOS]
 
-        return {
-            'toks': qtoks,
-            'labels': 1,
-        }
+        return qtoks, 1
 
     def __len__(self):
         return len(self.qs)
@@ -63,11 +60,10 @@ def test_dataset():
     debug = True
 
     ds = QADataset(**locals())
-    datum = ds[0]
-    print(datum)
-    print(ds.decode(datum['toks']))
+    toks, labels = ds[0]
+    print(toks)
+    print(ds.decode(toks))
 
     for i in torch.randperm(len(ds)):
-        datum = ds[i]
-        toks = datum['toks']
+        toks, labels = ds[i]
         assert (toks >= 0).all() and (toks < vocab_size).all()

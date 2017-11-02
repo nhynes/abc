@@ -33,12 +33,8 @@ class GenDataset(torch.utils.data.Dataset):
                 samples.extend(map(lambda x: x.data.cpu(), gen_seqs))
             self.samples = torch.cat(samples, -1).view(-1, seqlen + 1)
 
-
     def __getitem__(self, index):
-        return {
-            'toks': self.samples[index],
-            'labels': self.label,
-        }
+        return self.samples[index], self.label
 
     def __len__(self):
         return len(self.samples)
@@ -58,12 +54,12 @@ def test_dataset():
     gen_init_toks = Variable(torch.LongTensor(batch_size, 1).fill_(1))
 
     ds = GenDataset(**locals())
-    datum = ds[0]
-    print(datum)
+    toks, labels = ds[0]
+    print(toks)
+    print(labels)
 
     assert len(ds) == torch.np.ceil(num_samples / batch_size) * batch_size
 
     for i in torch.randperm(len(ds)):
-        datum = ds[i]
-        toks = datum['toks']
+        toks, labels = ds[i]
         assert (toks >= 0).all() and (toks < vocab_size).all()

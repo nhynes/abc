@@ -17,74 +17,23 @@ OPTS_FILE = 'opts.txt'
 
 PHASES = ('g_ml', 'd_ml', 'adv')
 G_ML, D_ML, ADV = PHASES
-LABEL_G, LABEL_O = 0, 1
+LABEL_GEN, LABEL_REAL = 0, 1
 
 EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
 PAD, UNK, BOS, EOS = EXTRA_VOCAB
-
-def resume(opts):
-    """Returns a model, its inputs, and optimizer loaded from a given epoch."""
-    opts_path = OPTS_PATH
-    with open(opts_path, 'rb') as f_opts:
-        init_opts = pickle.load(f_opts)
-
-    for opt_name, opt_val in vars(init_opts).items():
-        if opt_name not in OVERWRITE_OPTS:
-            setattr(opts, opt_name, opt_val)
-
-    i = 1
-    while os.path.isfile(opts_path):
-        opts_path = f'run/opts_{i}.pkl'
-        i += 1
-    with open(opts_path, 'wb') as f_new_opts:
-        pickle.dump(opts, f_new_opts)
-
-    net, inputs = create_model(opts)
-    net.load_state_dict(torch.load(MSNAP_PATH.format(opts.resume_epoch)))
-
-    optimizer = create_optimizer(opts, net)
-    optimizer.load_state_dict(torch.load(OSNAP_PATH.format(opts.resume_epoch)))
-
-    return net, inputs, optimizer
-
-
-def create_datasets(opts, partitions=('train', 'val')):
-    """Returns a mapping from the provided partitions to `Dataset`s."""
-    import dataset
-    part_datasets = {part: dataset.create(part=part, **vars(opts))
-                     for part in partitions}
-    return part_datasets
-
-
-def create_loaders(opts, datasets):
-    """Returns loaders for a mapping from partition to `Dataset`."""
-    loader_opts = {'batch_size': opts.batch_size, 'pin_memory': True,
-                   'num_workers': opts.nworkers}
-    return {
-        f'{part}_loader':
-        torch.utils.data.DataLoader(ds, shuffle=part == 'train', **loader_opts)
-        for part, ds in datasets.items()}
 
 
 def create_generator(opts):
     """Creates a token generator model."""
     import model
-    return model.Generator(word_emb_dim=opts.g_word_emb_dim, **vars(opts))
+    return model.Generator(word_emb_dim=opts.g_word_emb_dim,
+                           num_layers=opts.num_gen_layers, **vars(opts))
 
 
 def create_discriminator(opts):
     """Creates a token discriminator model."""
     import model
     return model.Discriminator(word_emb_dim=opts.d_word_emb_dim, **vars(opts))
-
-
-def create_optimizer(opts, model):
-    """Returns optimizers for the model."""
-    class GANOptimizer(object):
-        def __init__(self, model, opts):
-            self.g = optim.Adam(model.g.parameters(), lr=opts.lr_g)
-            self.d = optim.Adam(model.d.parameters(), lr=opts.lr_d)
-    return GANOptimizer(model, opts)
 
 
 def state2cpu(state):
@@ -173,29 +122,6 @@ class Vocab(object):
 
     def __len__(self):
         return len(self.tok_counts)
-
-
-def compute_oracle_nll(oracle, toks, return_probs=False):
-    """
-    oracle: a Generator
-    toks: [N]*T
-    """
-    init_toks = Variable(
-        torch.LongTensor(toks[0].size(0), 1).fill_(1).type_as(toks[0].data))
-    gen_probs, _ = oracle(torch.cat([init_toks] + toks, 1))
-    gen_probs = gen_probs[:-1]
-    flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-    flat_toks = torch.cat(toks).squeeze(1)
-    nll = nnf.nll_loss(flat_gen_probs, flat_toks).data[0]
-    if return_probs:
-        return nll, gen_probs
-    return nll
-
-
-def compute_acc(probs, labels):
-    """Computes the accuracy given prob and labels Variables."""
-    preds = probs.max(1)[1]
-    return ((preds == labels).sum().data[0] / len(labels))
 
 
 @contextmanager

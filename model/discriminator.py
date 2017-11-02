@@ -41,6 +41,8 @@ class Discriminator(nn.Module):
                  filter_widths, num_filters, dropout, **kwargs):
         super(Discriminator, self).__init__()
 
+        assert len(filter_widths) == len(num_filters)
+
         pad_idx = None if kwargs.get('synth') else 0
         self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
                                      padding_idx=pad_idx)
