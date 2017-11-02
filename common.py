@@ -19,6 +19,8 @@ PHASES = ('g_ml', 'd_ml', 'adv')
 G_ML, D_ML, ADV = PHASES
 LABEL_G, LABEL_O = 0, 1
 
+EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
+PAD, UNK, BOS, EOS = EXTRA_VOCAB
 
 def resume(opts):
     """Returns a model, its inputs, and optimizer loaded from a given epoch."""
