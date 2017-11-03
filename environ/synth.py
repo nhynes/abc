@@ -6,19 +6,43 @@ import model
 from .environment import Environment
 
 class SynthEnvironment(Environment):
+    """Functions for training a model on a synthetic dataset."""
+
+    @classmethod
+    def get_opt_parser(cls):
+        """Returns an `ArgumentParser` that parses env-specific opts."""
+        parser = super(SynthEnvironment, cls).get_opt_parser()
+        parser.add_argument(
+            '--oracle-type', default=model.generator.RNN,
+            choices=model.generator.TYPES)
+        parser.set_defaults(
+            seqlen=20,
+            vocab_size=5000,
+            g_word_emb_dim=34,
+            d_word_emb_dim=64,
+            gen_dim=32,
+            dropout=0.25,
+            num_gen_layers=1,
+            lr_g=0.001,
+            lr_d=0.001,
+            )
+        return parser
+
     def __init__(self, opts):
-        self.opts = opts
-        self.oracle = self.create_oracle(opts)
+        """Creates a SynthEnvironment."""
+        super(SynthEnvironment, self).__init__(opts)
+
+        self.oracle = self._create_oracle()
         print('here')
         exit()
 
     def _create_oracle(self):
         """Returns a randomly initialized generator."""
         with common.rand_state(self.opts.seed):
-            oracle = model.generator.create(self.opts)
-            if opts.gen_type == model.generator.RNN:
-                for param in oracle.parameters():
-                    nn.init.normal(param, std=1)
+            oracle = model.generator.create(
+                gen_type=opts.oracle_type, **vars(self.opts))
+            for param in oracle.parameters():
+                nn.init.normal(param, std=1)
         return oracle
 
     def compute_oracle_nll(self, toks, return_probs=False):

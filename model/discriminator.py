@@ -82,9 +82,9 @@ class Discriminator(nn.Module):
         return preds
 
 
-def create(opts):
+def create(d_word_emb_dim, **opts):
     """Creates a token discriminator."""
-    return Discriminator(word_emb_dim=opts.d_word_emb_dim, **vars(opts))
+    return Discriminator(word_emb_dim=d_word_emb_dim, **vars(opts))
 
 
 def test_discriminator():

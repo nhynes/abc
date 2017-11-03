@@ -9,8 +9,8 @@ class Environment(object):
     def __init__(self, opts):
         self.opts = opts
 
-        self.g = model.generator.create(opts).cuda()
-        self.d = model.discriminator.create(opts).cuda()
+        self.g = model.generator.create(**vars(opts)).cuda()
+        self.d = model.discriminator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
@@ -35,7 +35,7 @@ class Environment(object):
         parser.add_argument('--d-word-emb-dim', type=int)
         parser.add_argument('--gen-dim', type=int)
         parser.add_argument('--num-gen-layers', default=1, type=int)
-        parser.add_argument('--dropout', default=0.25, type=float)
+        parser.add_argument('--dropout', type=float)
         parser.add_argument('--seqlen', type=int)
         parser.add_argument('--batch-size', default=64, type=int)
         parser.add_argument('--num-filters',
