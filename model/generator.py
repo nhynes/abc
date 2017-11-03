@@ -1,21 +1,27 @@
-"""The Generator."""
+"""The Generators."""
 
 import torch
 from torch import nn
 from torch.autograd import Variable
 from torch.nn import functional as nnf
 
+import environ
 from .bottles import BottledLinear, BottledLogSoftmax
 
+TYPES = ('rnn', 'cnn')
+RNN, CNN = TYPES
 
-class Generator(nn.Module):
+
+class RNNGenerator(nn.Module):
     """An RNN token generator."""
 
     def __init__(self, vocab_size, word_emb_dim, gen_dim, num_layers,
-                 **unused_kwargs):
-        super(Generator, self).__init__()
+                 **kwargs):
+        super(RNNGenerator, self).__init__()
 
-        self.word_emb = nn.Embedding(vocab_size, word_emb_dim, padding_idx=0)
+        padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
+        self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
+                                     padding_idx=padding_idx)
         self.gen_rnn = nn.LSTM(word_emb_dim, gen_dim, num_layers)
         self.word_dec = nn.Sequential(
             BottledLinear(gen_dim, vocab_size),
@@ -64,24 +70,88 @@ class Generator(nn.Module):
             return gen_seqs, gen_probs, first_state
         return gen_seqs, gen_probs
 
-    def create_inputs(self):
-        """Returns a dict of tensors that this model may use as input."""
-        return {
-            'inputs': torch.FloatTensor(),
-            'outputs_tgt': torch.LongTensor(),
-        }
+
+class CNNGenerator(nn.Module):
+    """A CNN token generator (only used to generate whole sequences)."""
+
+    def __init__(self, vocab_size, word_emb_dim, gen_dim, seqlen, **kwargs):
+        super(CNNGenerator, self).__init__()
+
+        self.word_emb_dim = word_emb_dim
+
+        kw = 5
+        gen_len = 1
+        pad = 1  # padding
+        layer_specs = []
+        while True:
+            stride = 1 + (len(layer_specs) < 3)
+            new_len = (gen_len - 1)*stride + kw - 2*pad
+            if new_len > seqlen:
+                break
+            layer_specs.append((kw, stride, pad))
+            gen_len = new_len
+        remainder = seqlen - gen_len
+        if remainder > 0:
+            layer_specs.append((remainder+1, 1, 0))
+
+        layers = []
+        d_step = (gen_dim - word_emb_dim) // len(layer_specs)
+        d = word_emb_dim
+        for i, (kw, stride, pad) in enumerate(layer_specs, 1):
+            d_out = d + d_step if i < len(layer_specs) else gen_dim
+            layers.append(nn.ConvTranspose1d(
+                d, d_out, kw, stride=stride, padding=pad))
+            layers.append(nn.ReLU(inplace=True))
+            d = d_out
+        layers.append(nn.Conv1d(gen_dim, vocab_size, 1))
+        self.gen = nn.Sequential(*layers)
+
+    def forward(self, init, **unused_kwargs):
+        """ init: N*d """
+        word_embs = self.gen(init.unsqueeze(-1)).unsqueeze(-1)
+        word_log_probs = nnf.log_softmax(word_embs).squeeze(-1)  # N*V*T
+        return word_log_probs.permute(2, 0, 1)  # T*N*V
+
+    def rollout(self, init_state, ro_steps):
+        """Just generate a totally random sequence.
+
+        init_state: N*1
+        """
+        if isinstance(init_state, Variable):
+            init_state = (init_state, None)
+        gen_toks, gen_state = init_state
+
+        th = torch.cuda if gen_toks.is_cuda else torch
+        init = Variable(th.FloatTensor(
+            gen_toks.size(0), self.word_emb_dim).normal_(), volatile=True)
+
+        tok_log_probs = self(init)
+        tok_probs = tok_log_probs.exp()
+        flat_tok_probs = tok_probs.view(-1, tok_probs.size(-1))  # (T*N)*V
+        flat_gen_toks = torch.multinomial(flat_tok_probs, 1)
+        gen_toks = flat_gen_toks.view(tok_probs.size()[:-1]).t()
+        return gen_toks, tok_log_probs
 
 
-def test_generator():
+def create(opts):
+    """Creates a token generator."""
+    gen_type = getattr(opts, 'gen_type', RNN)
+    gen_cls = CNNGenerator if gen_type == CNN else RNNGenerator
+    return gen_cls(word_emb_dim=opts.g_word_emb_dim,
+                   num_layers=opts.num_gen_layers, **vars(opts))
+
+
+def test_rnn_generator():
     import common
 
     batch_size = 4
     vocab_size = 32
     word_emb_dim = 8
     gen_dim = 12
+    num_layers = 1
     debug = True
 
-    gen = Generator(**locals())
+    gen = RNNGenerator(**locals())
 
     toks = Variable(torch.LongTensor(batch_size, 1).fill_(1))
 
@@ -110,3 +180,25 @@ def test_generator():
     with common.rand_state(torch, ro_rng):
         next_ro, _ = gen.rollout((ro_seqs[0], ro_hid), 1)
     assert (ro_seqs[1].data == next_ro[0].data).all()
+
+def test_cnn_generator():
+    batch_size = 4
+    vocab_size = 32
+    word_emb_dim = 8
+    gen_dim = 12
+    seqlen = 20
+    debug = True
+
+    gen = CNNGenerator(**locals())
+
+    init = Variable(torch.randn(batch_size, word_emb_dim))
+
+    tok_log_probs = gen(init)
+    assert tok_log_probs.size(0) == seqlen
+    assert tok_log_probs.size(1) == batch_size
+    assert tok_log_probs.size(2) == vocab_size
+    assert torch.np.allclose(tok_log_probs.exp().sum(-1).data.numpy(), 1)
+
+    gen_toks, _ = gen.rollout(init, seqlen)
+    assert gen_toks.size(0) == batch_size
+    assert gen_toks.size(1) == seqlen

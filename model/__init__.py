@@ -1,5 +1,5 @@
 # from . import SeqGAN
-from .generator import Generator
+from .generator import RNNGenerator, CNNGenerator
 from .discriminator import Discriminator
 
 def create(*args, **kwargs):

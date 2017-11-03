@@ -57,7 +57,7 @@ class QAEnvironment(Environment):
 
             gen_probs, _ = self.g(toks[:, :-1])
             flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-            return nnf.nll_loss(flat_gen_probs, flat_tgts, ignore_index=0)
+            return nnf.nll_loss(flat_gen_probs, flat_tgts)
 
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             train_loss = 0
@@ -78,9 +78,9 @@ class QAEnvironment(Environment):
             logger.info(
                 f'[{epoch}] loss: train={train_loss:.3f} val={val_loss:.3f}')
 
-            gen_toks, _ = self.g.rollout(self.init_toks[:1], self.opts.seqlen)
-            gen_toks = torch.cat(gen_toks, -1)
-            logger.debug(self.train_dataset.decode(gen_toks.data[0]))
+            gen_toks, _ = self.g.rollout(self.init_toks[:5], self.opts.seqlen)
+            for tok_vec in torch.cat(gen_toks, -1).data:
+                logger.debug(self.train_dataset.decode(tok_vec))
 
     def pretrain_d(self):
         pass

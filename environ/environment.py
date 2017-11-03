@@ -3,14 +3,14 @@ import argparse
 from torch.autograd import Variable
 import torch
 
-import common
+import model
 
 class Environment(object):
     def __init__(self, opts):
         self.opts = opts
 
-        self.g = common.create_generator(opts).cuda()
-        self.d = common.create_discriminator(opts).cuda()
+        self.g = model.generator.create(opts).cuda()
+        self.d = model.discriminator.create(opts).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)

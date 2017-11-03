@@ -23,19 +23,6 @@ EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
 PAD, UNK, BOS, EOS = EXTRA_VOCAB
 
 
-def create_generator(opts):
-    """Creates a token generator model."""
-    import model
-    return model.Generator(word_emb_dim=opts.g_word_emb_dim,
-                           num_layers=opts.num_gen_layers, **vars(opts))
-
-
-def create_discriminator(opts):
-    """Creates a token discriminator model."""
-    import model
-    return model.Discriminator(word_emb_dim=opts.d_word_emb_dim, **vars(opts))
-
-
 def state2cpu(state):
     """Moves `Tensor`s in state dict to the CPU."""
     if isinstance(state, dict):

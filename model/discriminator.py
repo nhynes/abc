@@ -82,6 +82,11 @@ class Discriminator(nn.Module):
         return preds
 
 
+def create(opts):
+    """Creates a token discriminator."""
+    return Discriminator(word_emb_dim=opts.d_word_emb_dim, **vars(opts))
+
+
 def test_discriminator():
     batch_size = 3
     vocab_size = 32

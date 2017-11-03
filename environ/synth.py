@@ -1,8 +1,9 @@
 import argparse
 import os
 
-from .environment import Environment
 import common
+import model
+from .environment import Environment
 
 class SynthEnvironment(Environment):
     def __init__(self, opts):
@@ -14,9 +15,10 @@ class SynthEnvironment(Environment):
     def _create_oracle(self):
         """Returns a randomly initialized generator."""
         with common.rand_state(self.opts.seed):
-            oracle = common.create_generator(**vars(self.opts))
-            for param in oracle.parameters():
-                nn.init.normal(param, std=1)
+            oracle = model.generator.create(self.opts)
+            if opts.gen_type == model.generator.RNN:
+                for param in oracle.parameters():
+                    nn.init.normal(param, std=1)
         return oracle
 
     def compute_oracle_nll(self, toks, return_probs=False):
