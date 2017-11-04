@@ -1,11 +1,8 @@
 """A Dataset that loads the output of a generative model."""
-import copy
-
 import torch
 import torch.utils.data
 from torch.autograd import Variable
 
-from common import EXTRA_VOCAB, UNK, BOS, EOS
 import common
 
 
@@ -18,16 +15,13 @@ class GenDataset(torch.utils.data.Dataset):
 
         self.label = label
 
-        orig_rand_state = torch.get_rng_state()
-        torch.manual_seed(seed)
-
         th = torch.cuda if gen_init_toks.is_cuda else torch
         with common.rand_state(th, seed):
             init_toks = gen_init_toks.data.cpu()
             batch_size = gen_init_toks.size(0)
             num_batches = (num_samples + batch_size - 1) // batch_size
             samples = []
-            for i in range(num_batches):
+            for _ in range(num_batches):
                 gen_seqs, _ = generator.rollout(gen_init_toks, seqlen)
                 samples.append(init_toks)
                 samples.extend(map(lambda x: x.data.cpu(), gen_seqs))
@@ -41,8 +35,10 @@ class GenDataset(torch.utils.data.Dataset):
 
 
 def test_dataset():
+    """Tests the Dataset."""
     import model
 
+    # pylint: disable=unused-variable
     vocab_size = 50
     batch_size = 32
     label = 0
@@ -50,7 +46,8 @@ def test_dataset():
     seqlen = 21
     seed = 42
 
-    generator = model.Generator(vocab_size=50, word_emb_dim=32, gen_dim=16)
+    generator = model.generator.RNNGenerator(
+        vocab_size=50, word_emb_dim=32, gen_dim=16, num_layers=1)
     gen_init_toks = Variable(torch.LongTensor(batch_size, 1).fill_(1))
 
     ds = GenDataset(**locals())

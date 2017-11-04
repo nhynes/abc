@@ -4,7 +4,7 @@ import os
 import logging
 
 import torch
-import torch.nn.functional as nnf
+from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import common
@@ -39,7 +39,7 @@ class QAEnvironment(Environment):
         self.train_dataset = dataset.QADataset(part='train', **vars(opts))
         self.val_dataset = dataset.QADataset(part='val', **vars(opts))
 
-        self.init_toks.data.fill_(self.train_dataset.vocab[common.BOS])
+        self.ro_init_toks.data.fill_(self.train_dataset.vocab[common.BOS])
 
     def pretrain_g(self):
         """Pretrains G using maximum-likelihood on the QA dataset."""
@@ -49,20 +49,10 @@ class QAEnvironment(Environment):
         train_loader = self._create_dataloader(self.train_dataset)
         val_loader = self._create_dataloader(self.val_dataset)
 
-        def _forward_batch(batch, volatile=False):
-            toks, _ = batch
-            toks = Variable(
-                toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
-            flat_tgts = toks[:, 1:].t().contiguous().view(-1)
-
-            gen_probs, _ = self.g(toks[:, :-1])
-            flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-            return nnf.nll_loss(flat_gen_probs, flat_tgts)
-
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             train_loss = 0
             for batch in train_loader:
-                loss = _forward_batch(batch)
+                loss = self._forward_g_pretrain(batch)
                 train_loss += loss.data[0]
 
                 self.optim_g.zero_grad()

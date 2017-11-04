@@ -1,15 +1,7 @@
 """Utility functions for training neural networks."""
 
-import os
 import pickle
 from contextlib import contextmanager
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as nnf
-import torch.optim as optim
-import torch.utils.data
-from torch.autograd import Variable
 
 
 RUN_DIR = 'run'
@@ -23,31 +15,19 @@ EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
 PAD, UNK, BOS, EOS = EXTRA_VOCAB
 
 
-def state2cpu(state):
-    """Moves `Tensor`s in state dict to the CPU."""
-    if isinstance(state, dict):
-        return type(state)({k: state2cpu(v) for k, v in state.items()})
-    elif torch.is_tensor(state):
-        return state.cpu()
-
-
-def ship_batch(batch, volatile=False):
-    """Ships a batch of data to the GPU."""
-    toks, labels = batch
-    toks = Variable(toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
-    labels = Variable(labels.view(-1), volatile=volatile).cuda()
-    return toks, labels
-
-
-def copy_inputs(cpu_inputs, inputs, volatile=False):
-    """Copies Tensors into Variables."""
-    for input_name, inp in inputs.items():
-        if input_name not in cpu_inputs:
-            continue
-        cpu_tensor = cpu_inputs[input_name]
-        inp.data.resize_(cpu_tensor.size()).copy_(cpu_tensor)
-        if isinstance(inp, Variable):
-            inp.volatile = volatile
+@contextmanager
+def rand_state(th, rand_state):
+    """Pushes and pops a random state.
+    th: torch or torch.cuda
+    rand_state: an integer or tensor returned by `get_rng_state`
+    """
+    orig_rand_state = th.get_rng_state()
+    if isinstance(rand_state, int):
+        th.manual_seed(rand_state)  # this is a slow operation!
+        rand_state = th.get_rng_state()
+    th.set_rng_state(rand_state)
+    yield rand_state
+    th.set_rng_state(orig_rand_state)
 
 
 def unpickle(path_pkl):
@@ -109,14 +89,3 @@ class Vocab(object):
 
     def __len__(self):
         return len(self.tok_counts)
-
-
-@contextmanager
-def rand_state(th, rand_state):
-    orig_rand_state = th.get_rng_state()
-    if isinstance(rand_state, int):
-        th.manual_seed(rand_state)  # this is a slow operation!
-        rand_state = th.get_rng_state()
-    th.set_rng_state(rand_state)
-    yield rand_state
-    th.set_rng_state(orig_rand_state)

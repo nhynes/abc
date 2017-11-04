@@ -4,7 +4,6 @@ import functools
 import torch
 from torch import nn
 from torch.autograd import Variable
-from torch.nn import functional as nnf
 
 
 def _l2_reg(mod, l=1e-4):
@@ -16,6 +15,8 @@ def _l2_reg(mod, l=1e-4):
 
 
 class Highway(nn.Module):
+    """A Highway layer Module."""
+
     def __init__(self, in_features, activation=nn.ReLU(True)):
         super(Highway, self).__init__()
 
@@ -60,8 +61,7 @@ class Discriminator(nn.Module):
             Highway(emb_dim),
             nn.Dropout(dropout),
             _l2_reg(nn.Linear(emb_dim, 2)),
-            nn.LogSoftmax(),
-       )
+            nn.LogSoftmax())
 
     def forward(self, toks):
         """
@@ -84,10 +84,12 @@ class Discriminator(nn.Module):
 
 def create(d_word_emb_dim, **opts):
     """Creates a token discriminator."""
-    return Discriminator(word_emb_dim=d_word_emb_dim, **vars(opts))
+    return Discriminator(word_emb_dim=d_word_emb_dim, **opts)
 
 
 def test_discriminator():
+    """Tests the Discriminator."""
+    # pylint: disable=unused-variable
     batch_size = 3
     vocab_size = 32
     word_emb_dim = 100

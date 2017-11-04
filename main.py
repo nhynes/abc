@@ -8,6 +8,7 @@ import logging
 
 import torch
 
+import common
 from common import PHASES, G_ML, D_ML, ADV, RUN_DIR
 import environ
 
@@ -17,12 +18,24 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', choices=environ.ENVS, default=environ.QA)
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--seed', default=42, type=int)
-    opts = environ.parse_env_opts(*parser.parse_known_args())
+    init_opts, remaining_opts = parser.parse_known_args()
 
-    os.mkdir(RUN_DIR)
-    with open(os.path.join(RUN_DIR, 'opts.pkl'), 'wb') as f_opts:
-        pickle.dump(vars(opts), f_opts)
+    opts_file = os.path.join(RUN_DIR, 'opts.pkl')
+    if init_opts.resume:
+        new_opts = environ.parse_env_opts(
+            init_opts, remaining_opts, no_defaults=True)
+        opts = argparse.Namespace(**common.unpickle(opts_file))
+        for k, v in vars(new_opts).items():
+            if v is not None:
+                setattr(opts, k, v)
+    else:
+        opts = environ.parse_env_opts(init_opts, remaining_opts,
+                                      no_defaults=True)
+        os.mkdir(RUN_DIR)
+        with open(opts_file, 'wb') as f_opts:
+            pickle.dump(vars(opts), f_opts)
 
     logging.basicConfig(format='%(message)s', level=logging.DEBUG)
     logger = logging.getLogger()
@@ -34,6 +47,8 @@ def main():
 
     for phase in PHASES:
         logger.info(f'Beginning phase: {phase}')
+        torch.manual_seed(opts.seed)
+        torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase) as phase_runner:
             phase_runner()
 

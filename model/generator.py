@@ -3,7 +3,6 @@
 import torch
 from torch import nn
 from torch.autograd import Variable
-from torch.nn import functional as nnf
 
 import environ
 from .bottles import BottledLinear, BottledLogSoftmax
@@ -24,10 +23,8 @@ class RNNGenerator(nn.Module):
                                      padding_idx=padding_idx)
 
         if rrnn:
-            self.gen = nn.RNN(word_emb_dim, gen_dim, num_layers,
-                              nonlinearity='relu')
-        else:
-            self.gen = nn.LSTM(word_emb_dim, gen_dim, num_layers)
+            gen_dim *= 10
+        self.gen = nn.LSTM(word_emb_dim, gen_dim, num_layers=num_layers)
 
         self.word_dec = nn.Sequential(
             BottledLinear(gen_dim, vocab_size),
@@ -85,6 +82,8 @@ def create(g_word_emb_dim, num_gen_layers, gen_type=RNN, **opts):
 
 
 def test_rnn_generator():
+    """Tests the RNNGenerator."""
+    # pylint: disable=too-many-locals,unused-variable
     import common
 
     batch_size = 4
@@ -92,7 +91,7 @@ def test_rnn_generator():
     word_emb_dim = 8
     gen_dim = 12
     num_layers = 1
-    rrnn=True
+    rrnn = True
     debug = True
 
     gen = RNNGenerator(**locals())

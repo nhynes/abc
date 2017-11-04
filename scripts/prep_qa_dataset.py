@@ -1,3 +1,5 @@
+"""Formats the Yahoo Answers dataset."""
+
 from collections import Counter
 import argparse
 import os
@@ -74,6 +76,7 @@ def _run_pipeline(pipeline, cache_dir):
 
 
 def main():
+    """Runs a pipeline that formats the Yahoo Answers dataset."""
     # --------------------------------------------------------------------------
     parser = argparse.ArgumentParser()
     parser.add_argument('--train-frac', type=float, default=0.8)
