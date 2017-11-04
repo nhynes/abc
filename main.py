@@ -31,8 +31,7 @@ def main():
             if v is not None:
                 setattr(opts, k, v)
     else:
-        opts = environ.parse_env_opts(init_opts, remaining_opts,
-                                      no_defaults=True)
+        opts = environ.parse_env_opts(init_opts, remaining_opts)
         os.mkdir(RUN_DIR)
         with open(opts_file, 'wb') as f_opts:
             pickle.dump(vars(opts), f_opts)
@@ -46,7 +45,7 @@ def main():
     env = environ.create(opts.env, opts)
 
     for phase in PHASES:
-        logger.info(f'Beginning phase: {phase}')
+        logger.debug(f'Beginning phase: {phase}')
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase) as phase_runner:

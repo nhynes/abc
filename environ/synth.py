@@ -1,5 +1,6 @@
 """A class for training a SeqGAN model on synthetic data."""
 
+import itertools
 import logging
 
 import torch
@@ -24,6 +25,7 @@ class SynthEnvironment(Environment):
         parser.add_argument(
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
+        parser.add_argument('--grad-reg', action='store_true')
         parser.set_defaults(
             seqlen=20,
             vocab_size=5000,
@@ -31,6 +33,7 @@ class SynthEnvironment(Environment):
             d_word_emb_dim=64,
             pretrain_g_epochs=50,
             pretrain_d_epochs=10,
+            adv_train_iters=750,
             gen_dim=32,
             dropout=0.25,
             num_gen_layers=1,
@@ -41,6 +44,9 @@ class SynthEnvironment(Environment):
 
     def __init__(self, opts):
         """Creates a SynthEnvironment."""
+        if opts.grad_reg:
+            torch.backends.cudnn.enabled = False
+
         super(SynthEnvironment, self).__init__(opts)
 
         self.ro_init_toks.data.zero_()
@@ -61,13 +67,15 @@ class SynthEnvironment(Environment):
                 nn.init.normal(param, std=1)
         return oracle
 
-    def _create_dataset(self, gen, label):
+    def _create_dataset(self, gen, label, num_samples=None, seed=None):
+        num_samples = num_samples or self.opts.num_gen_samps
+        seed = seed or self.opts.seed
         return dataset.GenDataset(generator=gen,
                                   label=label,
                                   seqlen=self.opts.seqlen,
-                                  seed=self.opts.seed,
+                                  seed=seed,
                                   gen_init_toks=self.init_toks,
-                                  num_samples=self.opts.num_gen_samps)
+                                  num_samples=num_samples)
 
     def compute_oracle_nll(self, toks, return_probs=False):
         """
@@ -85,9 +93,9 @@ class SynthEnvironment(Environment):
 
     def compute_acc(self, probs, label):
         """Computes the accuracy given prob Variable and and label."""
-        self._labels.data.fill_(label)
-        preds = probs.max(1)[1]
-        return (preds == self._labels).float().mean().data[0]
+        self._labels.fill_(label)
+        preds = probs.data.max(1)[1]
+        return (preds == self._labels).float().mean()
 
     def _compute_test_nll(self, num_samples=256):
         test_nll = 0
@@ -136,25 +144,33 @@ class SynthEnvironment(Environment):
     def pretrain_d(self):
         """Pretrains D using pretrained G."""
 
-        gen_dataset = self._create_dataset(self.g, LABEL_GEN)
-
-        dataloader = self._create_dataloader(torch.utils.data.ConcatDataset(
-            (self.oracle_dataset, gen_dataset)))
-
         for epoch in range(1, self.opts.pretrain_d_epochs+1):
+            gen_dataset = self._create_dataset(self.g, LABEL_GEN,
+                                               seed=self.opts.seed+epoch)
+            dataloader = self._create_dataloader(torch.utils.data.ConcatDataset(
+                (self.oracle_dataset, gen_dataset)))
+
             train_loss = 0
+            epoch_gnorm = 0
             for batch in dataloader:
                 loss = self._forward_d(batch)
                 train_loss += loss.data[0]
 
                 self.optim_d.zero_grad()
                 loss.backward()
+                gnorm = sum(
+                    (p.grad**2).sum() for p in self.d.parameters(dx2=True))
+                epoch_gnorm += gnorm.data[0]
+                # (gnorm * 0.01).backward()
+                nn.utils.clip_grad_norm(self.d.parameters(dx2=True), 1)
                 self.optim_d.step()
             train_loss /= len(dataloader)
+            epoch_gnorm /= len(dataloader)
 
             acc_gen, acc_oracle = self._compute_test_acc()
             logging.info(f'[{epoch}] loss: {train_loss:.3f}  '
-                         f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}')
+                         f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
+                         f'gnorm: {epoch_gnorm:.2f}')
 
     def _get_qs(self, gen_seqs):
         qs = Variable(self._qs.zero_())
@@ -186,56 +202,70 @@ class SynthEnvironment(Environment):
         qs -= qs.mean(0, keepdim=True)
         return qs.detach()
 
+    @staticmethod
+    def _get_grad_norm(mod):
+        return sum((p.grad**2).sum() for p in mod.parameters(dx2=True))
+
     def train_adv(self):
         """Adversarially train G against D."""
 
-        # self.optim_g.param_groups[0]['lr'] *= .1
+        # for optimizer in (self.optim_g, self.optim_d):
+        #     optimizer.param_groups[0]['lr'] *= 0.1
+        # self.optim_g.param_groups[0]['lr'] *= 0.1
+        # self.optim_d.param_groups[0]['lr'] *= 0.1
+        self.g_ro = self.g
         for epoch in range(1, self.opts.adv_train_iters+1):
-            self.g_ro.load_state_dict(self.g.state_dict())
+            # self.g_ro.load_state_dict(self.g.state_dict())
 
             # train G
-            for i in range(1, self.opts.adv_g_iters+1):
-                gen_seqs, gen_probs = self.g.rollout(self.init_toks,
-                                                     self.opts.seqlen)
-                gen_seqs = torch.cat(gen_seqs, -1)
-                gen_probs = torch.stack(gen_probs)  # T*N
+            gen_seqs, gen_probs = self.g.rollout(self.init_toks,
+                                                 self.opts.seqlen)
+            gen_seqs = torch.cat(gen_seqs, -1)
+            gen_probs = torch.stack(gen_probs)  # T*N
 
-                qs = self._get_qs(gen_seqs)  # T*N
+            qs = self._get_qs(gen_seqs)  # T*N
 
-                gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
-                    -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
-                # qs -= qs.mean()  # TODO: learned baseline
-                loss = -(qs * gen_seq_probs).sum(0).mean()
-
-                self.optim_g.zero_grad()
-                loss.backward()
-                self.optim_g.step()
-
-                if i % 10 == 0:
-                    # acc_g should go to zero, acc_oracle should not change
-                    acc_gen, acc_oracle = self._compute_test_acc()
-                    test_nll = self._compute_test_nll()
-                    logging.debug(
-                        f'[{epoch}] (G{i}) nll: {test_nll:.3f}  '
-                        f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}')
+            gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
+                -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
+            loss_g = -(qs * gen_seq_probs).sum(0).mean()
 
             # train D
-            with common.rand_state(torch.cuda, self.opts.seed + epoch):
-                gen_dataset = self._create_dataset(self.g, LABEL_GEN)
+            half_batch = self.opts.batch_size // 2
+            oracle_batch = [self.oracle_dataset[i]
+                            for i in torch.randperm(
+                                len(self.oracle_dataset))[:half_batch]]
+            oracle_toks, _ = zip(*oracle_batch)
+            oracle_toks = torch.stack(oracle_toks)[:, 1:].cuda()
 
-            dataloader = self._create_dataloader(torch.utils.data.ConcatDataset(
-                (self.oracle_dataset, gen_dataset)))
+            gen_seqs, _ = self.g.rollout(
+                self.init_toks[:half_batch], self.opts.seqlen)
+            gen_seqs = torch.cat(gen_seqs, -1).data
 
-            for i in range(1, self.opts.adv_d_epochs+1):
-                for batch in dataloader:
-                    loss = self._forward_d(batch)
+            batch_toks = torch.cat((oracle_toks, gen_seqs), 0)
+            self._labels[:half_batch] = LABEL_REAL
+            self._labels[half_batch:] = LABEL_GEN
 
-                    self.optim_d.zero_grad()
-                    loss.backward()
-                    self.optim_d.step()
+            loss_d = self._forward_d((batch_toks, self._labels), has_init=False)
 
-                acc_gen, acc_oracle = self._compute_test_acc()
-                test_nll = self._compute_test_nll()
-                logging.debug(
-                    f'[{epoch}] (D{i}) nll: {test_nll:.3f}  '
-                    f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}')
+            self.optim_g.zero_grad()
+            self.optim_d.zero_grad()
+            loss_g.backward(create_graph=self.opts.grad_reg)
+            loss_d.backward(create_graph=self.opts.grad_reg)
+            gnormg = self._get_grad_norm(self.g)
+            gnormd = self._get_grad_norm(self.d)
+            gnorm = gnormg + gnormd
+            # gnorm = sum(map(self._get_grad_norm, (self.d, self.g)))
+            print(gnormg.data[0], gnormd.data[0])
+            # gnorm = sum((p.grad**2).sum() for p in itertools.chain(*[
+            #     m.parameters(dx2=True) for m in (self.d, self.g)]))
+            if self.opts.grad_reg:
+                (gnorm * 1000.0).backward()
+            self.optim_g.step()
+            self.optim_d.step()
+
+            acc_gen, acc_oracle = self._compute_test_acc()
+            test_nll = self._compute_test_nll()
+            logging.info(
+                f'[{epoch}] nll: {test_nll:.3f}  '
+                f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
+                f'gnorm: {gnorm.data[0]:.2f}')

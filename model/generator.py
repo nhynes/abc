@@ -1,4 +1,5 @@
 """The Generators."""
+import itertools
 
 import torch
 from torch import nn
@@ -73,6 +74,17 @@ class RNNGenerator(nn.Module):
             return gen_seqs, gen_probs, first_state
         return gen_seqs, gen_probs
 
+    def parameters(self, dx2=False):
+        """
+        Returns an iterator over module parameters.
+        If dx2=True, only yield parameters that are twice differentiable.
+        """
+        if not dx2:
+            return super(RNNGenerator, self).parameters()
+        return itertools.chain(*[
+            m.parameters() for m in self.children()
+            if m != self.word_emb])
+
 
 def create(g_word_emb_dim, num_gen_layers, gen_type=RNN, **opts):
     """Creates a token generator."""
@@ -99,7 +111,7 @@ def test_rnn_generator():
     toks = Variable(torch.LongTensor(batch_size, 1).fill_(1))
 
     gen_probs, gen_state = gen(toks)
-    gen_toks = torch.multinomial(gen_probs.exp(), 1)
+    gen_toks = torch.multinomial(gen_probs.exp(), 1).detach()
     gen_probs, gen_state = gen(toks=gen_toks, prev_state=gen_state)
 
     # test basic rollout
@@ -123,3 +135,7 @@ def test_rnn_generator():
     with common.rand_state(torch, ro_rng):
         next_ro, _ = gen.rollout((ro_seqs[0], ro_hid), 1)
     assert (ro_seqs[1].data == next_ro[0].data).all()
+
+    # test double-backward
+    sum(gen_probs).sum().backward(create_graph=True)
+    sum(p.grad.norm() for p in gen.parameters(dx2=True)).backward()

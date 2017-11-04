@@ -1,5 +1,6 @@
 """The Discriminator."""
 import functools
+import itertools
 
 import torch
 from torch import nn
@@ -44,7 +45,7 @@ class Discriminator(nn.Module):
 
         assert len(filter_widths) == len(num_filters)
 
-        pad_idx = None if kwargs.get('synth') else 0
+        pad_idx = None if kwargs.get('env', None) == 'synth' else 0
         self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
                                      padding_idx=pad_idx)
 
@@ -81,6 +82,16 @@ class Discriminator(nn.Module):
 
         return preds
 
+    def parameters(self, dx2=False):
+        """
+        Returns an iterator over module parameters.
+        If dx2=True, only yield parameters that are twice differentiable.
+        """
+        if not dx2:
+            return super(Discriminator, self).parameters()
+        return itertools.chain(*[
+            m.parameters() for m in self.children() if m != self.word_emb])
+
 
 def create(d_word_emb_dim, **opts):
     """Creates a token discriminator."""
@@ -103,3 +114,6 @@ def test_discriminator():
     preds = d(Variable(torch.LongTensor(batch_size, 20).fill_(1)))
     assert preds.size(0) == batch_size
     assert preds.size(1) == 2
+
+    preds.sum().backward(create_graph=True)
+    sum(p.grad.norm() for p in d.parameters(dx2=True)).backward()

@@ -20,8 +20,8 @@ class Environment(object):
         self.opts = opts
 
         self.g = model.generator.create(**vars(opts)).cuda()
-        self.d = model.discriminator.create(**vars(opts)).cuda()
         self.g_ro = model.generator.create(**vars(opts)).cuda()
+        self.d = model.discriminator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
@@ -30,8 +30,7 @@ class Environment(object):
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
         self.init_toks = self.ro_init_toks[:opts.batch_size].detach()
 
-        self._labels = Variable(
-            torch.cuda.LongTensor(self.init_toks.size(0)), volatile=True)
+        self._labels = torch.cuda.LongTensor(self.opts.batch_size)
         self._qs = torch.cuda.FloatTensor(opts.seqlen, opts.batch_size)
         self._inv_idx = torch.arange(opts.batch_size-1, -1, -1).long().cuda()
 
@@ -69,7 +68,7 @@ class Environment(object):
         parser.add_argument('--lr-d', type=float)
         parser.add_argument('--pretrain-g-epochs', type=int)
         parser.add_argument('--pretrain-d-epochs', type=int)
-        parser.add_argument('--adv-train-iters', default=150, type=int)
+        parser.add_argument('--adv-train-iters', type=int)
         parser.add_argument('--adv-g-iters', default=150, type=int)
         parser.add_argument('--adv-d-iters', default=5, type=int)
         parser.add_argument('--adv-d-epochs', default=3, type=int)
@@ -92,6 +91,8 @@ class Environment(object):
             if 'state' in item_state and not item_state['state']:
                 continue  # don't load unstepped optim_states
             getattr(self, item).load_state_dict(item_state)
+        self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
+        self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
 
     def pretrain_g(self):
         """Pretrains G on a to-be-implemented dataset."""
@@ -122,10 +123,10 @@ class Environment(object):
         flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
         return nnf.nll_loss(flat_gen_probs, flat_tgts)
 
-    def _forward_d(self, batch, volatile=False):
+    def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
         toks = Variable(toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
         labels = Variable(labels.view(-1), volatile=volatile).cuda()
 
-        d_log_probs = self.d(toks[:, 1:])
+        d_log_probs = self.d(toks[:, has_init:])
         return nnf.nll_loss(d_log_probs, labels)
