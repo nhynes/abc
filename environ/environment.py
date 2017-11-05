@@ -1,6 +1,7 @@
 """A class for training a SeqGAN model."""
 
 import argparse
+import logging
 
 import torch
 from torch.nn import functional as nnf
@@ -12,7 +13,7 @@ import model
 class Environment(object):
     """A base class for training a SeqGAN model."""
 
-    _STATEFUL = ('g', 'd', 'g_ro', 'optim_g', 'optim_d')
+    _STATEFUL = ('g', 'd', 'optim_g', 'optim_d')
 
     def __init__(self, opts):
         """Creates an Environment."""
@@ -20,7 +21,6 @@ class Environment(object):
         self.opts = opts
 
         self.g = model.generator.create(**vars(opts)).cuda()
-        self.g_ro = model.generator.create(**vars(opts)).cuda()
         self.d = model.discriminator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
@@ -48,6 +48,8 @@ class Environment(object):
         parser.add_argument('--nworkers', default=4, type=int)
 
         # model
+        parser.add_argument('--d-type', choices=model.discriminator.TYPES,
+                            default=model.discriminator.RNN)
         parser.add_argument('--vocab-size', type=int)
         parser.add_argument('--g-word-emb-dim', type=int)
         parser.add_argument('--d-word-emb-dim', type=int)
@@ -90,7 +92,10 @@ class Environment(object):
         for item, item_state in zip(self._STATEFUL, state):
             if 'state' in item_state and not item_state['state']:
                 continue  # don't load unstepped optim_states
-            getattr(self, item).load_state_dict(item_state)
+            try:
+                getattr(self, item).load_state_dict(item_state)
+            except (RuntimeError, KeyError):
+                logging.warn(f'WARNING: could not load state for {item}')
         self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
         self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
 

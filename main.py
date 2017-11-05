@@ -17,7 +17,7 @@ def main():
     """Trains the model."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', choices=environ.ENVS, default=environ.QA)
+    parser.add_argument('--env', choices=environ.ENVS, default=environ.SYNTH)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--seed', default=42, type=int)
     init_opts, remaining_opts = parser.parse_known_args()

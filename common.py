@@ -14,6 +14,8 @@ LABEL_GEN, LABEL_REAL = 0, 1
 EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
 PAD, UNK, BOS, EOS = EXTRA_VOCAB
 
+EPS = 1e-10
+
 
 @contextmanager
 def rand_state(th, rand_state):

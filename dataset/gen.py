@@ -28,7 +28,10 @@ class GenDataset(torch.utils.data.Dataset):
             self.samples = torch.cat(samples, -1).view(-1, seqlen + 1)
 
     def __getitem__(self, index):
-        return self.samples[index], self.label
+        label = self.label
+        if not isinstance(index, int):
+            label = torch.LongTensor(len(index)).fill_(self.label)
+        return self.samples[index], label
 
     def __len__(self):
         return len(self.samples)
@@ -60,3 +63,7 @@ def test_dataset():
     for i in torch.randperm(len(ds)):
         toks, labels = ds[i]
         assert (toks >= 0).all() and (toks < vocab_size).all()
+
+    batch_toks, batch_labels = ds[torch.randperm(batch_size)]
+    assert len(batch_toks) == batch_size
+    assert len(batch_labels) == batch_size

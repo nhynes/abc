@@ -9,7 +9,7 @@ from torch.autograd import Variable
 from torch.nn import functional as nnf
 
 import common
-from common import LABEL_GEN, LABEL_REAL
+from common import LABEL_GEN, LABEL_REAL, EPS
 import dataset
 import model
 
@@ -151,26 +151,23 @@ class SynthEnvironment(Environment):
                 (self.oracle_dataset, gen_dataset)))
 
             train_loss = 0
-            epoch_gnorm = 0
+            gnorm = 0
             for batch in dataloader:
                 loss = self._forward_d(batch)
                 train_loss += loss.data[0]
 
                 self.optim_d.zero_grad()
                 loss.backward()
-                gnorm = sum(
-                    (p.grad**2).sum() for p in self.d.parameters(dx2=True))
-                epoch_gnorm += gnorm.data[0]
-                # (gnorm * 0.01).backward()
-                nn.utils.clip_grad_norm(self.d.parameters(dx2=True), 1)
+                gnorm += sum(
+                    (p.grad.data**2).sum() for p in self.d.parameters(dx2=True))
                 self.optim_d.step()
             train_loss /= len(dataloader)
-            epoch_gnorm /= len(dataloader)
+            gnorm /= len(dataloader)
 
             acc_gen, acc_oracle = self._compute_test_acc()
             logging.info(f'[{epoch}] loss: {train_loss:.3f}  '
                          f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
-                         f'gnorm: {epoch_gnorm:.2f}')
+                         f'gnorm: {gnorm:.2f}')
 
     def _get_qs(self, gen_seqs):
         qs = Variable(self._qs.zero_())
@@ -183,10 +180,10 @@ class SynthEnvironment(Environment):
         rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
 
         ro_rng = torch.cuda.get_rng_state()
-        _, ro_hid = self.g_ro(self.ro_init_toks)
+        _, ro_hid = self.g(self.ro_init_toks)
         for n in range(1, self.opts.seqlen):
             ro_state = (rep_gen_seqs[:, n-1].unsqueeze(-1), ro_hid)
-            ro_seqs, _, (ro_hid, ro_rng) = self.g_ro.rollout(
+            ro_seqs, _, (ro_hid, ro_rng) = self.g.rollout(
                 ro_state, self.opts.seqlen - n, return_first_state=True)
             full_ro = torch.cat([rep_gen_seqs[:, :n]] + ro_seqs, -1)
             assert full_ro.size(1) == self.opts.seqlen
@@ -206,36 +203,40 @@ class SynthEnvironment(Environment):
     def _get_grad_norm(mod):
         return sum((p.grad**2).sum() for p in mod.parameters(dx2=True))
 
+    def _ds_iter(self, dataset, batch_size):
+        batch_idxs_it = iter(())
+        while True:
+            try:
+                yield dataset[next(batch_idxs_it)]
+            except StopIteration:
+                batch_idxs = torch.randperm(len(dataset)).split(batch_size)
+                if len(dataset) % batch_size:
+                    batch_idxs = batch_idxs[:-1]
+                batch_idxs_it = iter(batch_idxs)
+
     def train_adv(self):
         """Adversarially train G against D."""
 
-        # for optimizer in (self.optim_g, self.optim_d):
-        #     optimizer.param_groups[0]['lr'] *= 0.1
         # self.optim_g.param_groups[0]['lr'] *= 0.1
         # self.optim_d.param_groups[0]['lr'] *= 0.1
-        self.g_ro = self.g
+        half_batch = self.opts.batch_size // 2
+        oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
         for epoch in range(1, self.opts.adv_train_iters+1):
-            # self.g_ro.load_state_dict(self.g.state_dict())
-
             # train G
-            gen_seqs, gen_probs = self.g.rollout(self.init_toks,
-                                                 self.opts.seqlen)
-            gen_seqs = torch.cat(gen_seqs, -1)
-            gen_probs = torch.stack(gen_probs)  # T*N
+            gen_seqs, gen_probs = self.g.rollout(
+                self.init_toks, self.opts.seqlen)
+            gen_seqs = torch.cat(gen_seqs, -1)  # T*N
+            gen_probs = torch.stack(gen_probs)  # T*N*V
 
             qs = self._get_qs(gen_seqs)  # T*N
 
             gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
                 -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
-            loss_g = -(qs * gen_seq_probs).sum(0).mean()
+            h_reg = (gen_probs * (gen_probs + EPS).log()).sum(-1).mean()
+            loss_g = -(qs * gen_seq_probs).sum(0).mean() + h_reg * 1e-5
 
             # train D
-            half_batch = self.opts.batch_size // 2
-            oracle_batch = [self.oracle_dataset[i]
-                            for i in torch.randperm(
-                                len(self.oracle_dataset))[:half_batch]]
-            oracle_toks, _ = zip(*oracle_batch)
-            oracle_toks = torch.stack(oracle_toks)[:, 1:].cuda()
+            oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
 
             gen_seqs, _ = self.g.rollout(
                 self.init_toks[:half_batch], self.opts.seqlen)
@@ -251,15 +252,9 @@ class SynthEnvironment(Environment):
             self.optim_d.zero_grad()
             loss_g.backward(create_graph=self.opts.grad_reg)
             loss_d.backward(create_graph=self.opts.grad_reg)
-            gnormg = self._get_grad_norm(self.g)
-            gnormd = self._get_grad_norm(self.d)
-            gnorm = gnormg + gnormd
-            # gnorm = sum(map(self._get_grad_norm, (self.d, self.g)))
-            print(gnormg.data[0], gnormd.data[0])
-            # gnorm = sum((p.grad**2).sum() for p in itertools.chain(*[
-            #     m.parameters(dx2=True) for m in (self.d, self.g)]))
+            gnorm = sum(map(self._get_grad_norm, (self.g, self.d)))
             if self.opts.grad_reg:
-                (gnorm * 1000.0).backward()
+                (gnorm * 0.0001).backward()
             self.optim_g.step()
             self.optim_d.step()
 
