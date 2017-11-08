@@ -128,7 +128,7 @@ class Environment(object):
 
         gen_probs, _ = self.g(toks[:, :-1])
         flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-        return nnf.nll_loss(flat_gen_probs, flat_tgts)
+        return nnf.nll_loss(flat_gen_probs, flat_tgts), gen_probs
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
@@ -136,4 +136,4 @@ class Environment(object):
         labels = Variable(labels.view(-1), volatile=volatile).cuda()
 
         d_log_probs = self.d(toks[:, has_init:])
-        return nnf.nll_loss(d_log_probs, labels)
+        return nnf.nll_loss(d_log_probs, labels), d_log_probs
