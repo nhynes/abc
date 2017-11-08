@@ -126,6 +126,18 @@ class SynthEnvironment(Environment):
         acc_oracle /= num_test_batches
         return acc_gen, acc_oracle
 
+    @staticmethod
+    def _get_entropy(t, discount_rate=None):
+        # assumes distributions are along the last dimension
+        infos = (t * (t + EPS).log())
+        if discount_rate:
+            t_sz = [sz if i == 0 else 1 for i, sz in enumerate(t.size())]
+            discount = t.data.new(*t_sz).fill_(1)
+            discount[1:] *= discount_rate
+            discount.cumprod(0, out=discount)
+            infos = infos * Variable(discount)
+        return -infos.sum(-1).mean()
+
     def pretrain_g(self):
         """Pretrains G using maximum-likelihood on a synthetic dataset."""
 
@@ -133,19 +145,22 @@ class SynthEnvironment(Environment):
 
         logging.info(f'[0] nll: {self._compute_test_nll():.3f}')
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
-            train_loss = 0
+            train_loss = entropy = 0
             for batch in dataloader:
-                loss = self._forward_g_pretrain(batch)
+                loss, gen_probs = self._forward_g_pretrain(batch)
+                entropy += _get_entropy(gen_probs).data[0]
                 train_loss += loss.data[0]
 
                 self.optim_g.zero_grad()
                 loss.backward()
                 self.optim_g.step()
             train_loss /= len(dataloader)
+            entropy /= len(dataloader)
 
             oracle_nll = self._compute_test_nll()
             logging.info(
-                f'[{epoch}] loss: {train_loss:.3f}  nll: {oracle_nll:.3f}')
+                f'[{epoch}] loss: {train_loss:.3f}  nll: {oracle_nll:.3f}  '
+                f'H: {entropy:.2f}')
 
     def pretrain_d(self):
         """Pretrains D using pretrained G."""
@@ -237,8 +252,8 @@ class SynthEnvironment(Environment):
 
             gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
                 -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
-            h_reg = (gen_probs * (gen_probs + EPS).log()).sum(-1).mean()
-            loss_g = -(qs * gen_seq_probs).sum(0).mean() + h_reg * 1e-5
+            entropy = self._get_entropy(gen_probs, discount_rate=0.9)
+            loss_g = -(qs * gen_seq_probs).sum(0).mean() - entropy * 1e-2
 
             # train D
             oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
@@ -247,7 +262,9 @@ class SynthEnvironment(Environment):
             self._labels[:half_batch] = LABEL_REAL
             self._labels[half_batch:] = LABEL_GEN
 
-            loss_d = self._forward_d((batch_toks, self._labels), has_init=False)
+            loss_d, d_probs = self._forward_d((batch_toks, self._labels),
+                                              has_init=False)
+            loss_d = loss_d + self._get_entropy(d_probs.exp()) * 0.001
 
             self.optim_g.zero_grad()
             self.optim_d.zero_grad()
@@ -265,4 +282,5 @@ class SynthEnvironment(Environment):
             logging.info(
                 f'[{epoch}] nll: {test_nll:.3f}  '
                 f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
-                f'gnorm: {gnorm.data[0]:.2f}')
+                f'gnorm: {gnorm.data[0]:.2f}  '
+                f'H: {entropy.data[0]:.2f}')
