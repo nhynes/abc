@@ -82,11 +82,13 @@ class Environment(object):
 
         return parser
 
-    def __getstate__(self):
+    @property
+    def state(self):
         return {item: getattr(self, item).state_dict()
                 for item in self._STATEFUL}
 
-    def __setstate__(self, state):
+    @state.setter
+    def state(self, state):
         for item_name, item_state in state.items():
             item = getattr(self, item_name, None)
             if item is None:
