@@ -4,6 +4,7 @@ import itertools
 
 import torch
 from torch import nn
+from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import environ
@@ -50,6 +51,8 @@ class Discriminator(nn.Module):
         self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
                                      padding_idx=padding_idx)
 
+        self.stdev = nn.Parameter(torch.randn(1) * 0.1)
+
     def parameters(self, dx2=False):
         """
         Returns an iterator over module parameters.
@@ -66,7 +69,9 @@ class Discriminator(nn.Module):
         """
         if isinstance(toks, (list, tuple)):
             toks = torch.cat(toks, -1)
-        return self._forward(toks)
+        logits = self._forward(toks)
+        fuzz = Variable(logits.data.new(logits.size()).normal_()) * self.stdev
+        return nnf.log_softmax(logits + fuzz)
 
 
 
@@ -89,11 +94,10 @@ class CNNDiscriminator(Discriminator):
         self.cnn_layers = nn.ModuleList(cnn_layers)
 
         emb_dim = sum(num_filters)
-        self.cls = nn.Sequential(
+        self.logits = nn.Sequential(
             Highway(emb_dim),
             nn.Dropout(dropout),
-            _l2_reg(nn.Linear(emb_dim, 2)),
-            nn.LogSoftmax())
+            _l2_reg(nn.Linear(emb_dim, 2)))
 
     def _forward(self, toks):
         """ toks: N*T """
@@ -105,7 +109,7 @@ class CNNDiscriminator(Discriminator):
             layer_acts.append(layer(embs).mean(-1))
         layers_acts = torch.cat(max_acts, -1)  # N*sum(num_filters)
 
-        return self.cls(layers_acts)
+        return self.logits(layers_acts)
 
 
 class RNNDiscriminator(Discriminator):
@@ -119,9 +123,7 @@ class RNNDiscriminator(Discriminator):
         self.rnn = nn.LSTM(word_emb_dim, emb_dim, num_layers=2,
                           bidirectional=True)
 
-        self.cls = nn.Sequential(
-            nn.Linear(emb_dim * 2, 2),
-            nn.LogSoftmax())
+        self.logits = nn.Linear(emb_dim * 2, 2)
 
     def _forward(self, toks):
         """
@@ -129,7 +131,7 @@ class RNNDiscriminator(Discriminator):
         """
         word_embs = self.word_emb(toks).transpose(0, 1)  # T*N*d_wemb
         seq_embs, _ = self.rnn(word_embs)
-        return self.cls(seq_embs[-1])
+        return self.logits(seq_embs[-1])
 
 
 def create(d_type, d_word_emb_dim, **opts):
