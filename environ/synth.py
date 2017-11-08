@@ -28,10 +28,11 @@ class SynthEnvironment(Environment):
         parser.add_argument('--grad-reg', action='store_true')
         parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
+            num_gen_samps=100000,
             seqlen=20,
             vocab_size=5000,
-            g_word_emb_dim=34,
-            d_word_emb_dim=64,
+            g_word_emb_dim=32,
+            d_word_emb_dim=32,
             pretrain_g_epochs=50,
             pretrain_d_epochs=10,
             adv_train_iters=750,
@@ -39,14 +40,13 @@ class SynthEnvironment(Environment):
             dropout=0.25,
             num_gen_layers=1,
             lr_g=0.01,
-            lr_d=0.0001,
+            lr_d=0.001,
             )
         return parser
 
     def __init__(self, opts):
         """Creates a SynthEnvironment."""
-        if opts.grad_reg:
-            torch.backends.cudnn.enabled = False
+        torch.nn._functions.rnn.force_unfused = opts.grad_reg
 
         super(SynthEnvironment, self).__init__(opts)
 
@@ -80,7 +80,7 @@ class SynthEnvironment(Environment):
                                   label=label,
                                   seqlen=self.opts.seqlen,
                                   seed=seed,
-                                  gen_init_toks=self.init_toks,
+                                  gen_init_toks=self.ro_init_toks,
                                   num_samples=num_samples)
 
     def compute_oracle_nll(self, toks, return_probs=False):
@@ -176,7 +176,7 @@ class SynthEnvironment(Environment):
                          f'gnorm: {gnorm:.2f}')
 
     def _get_qs(self, gen_seqs):
-        qs = Variable(self._qs.zero_())
+        qs = Variable(self._qs.zero_())  # T*N
 
         qs[-1] = self.d(gen_seqs)[:, LABEL_REAL].exp()
 
@@ -200,8 +200,7 @@ class SynthEnvironment(Environment):
 
             torch.cuda.set_rng_state(ro_rng)
 
-        # qs -= qs.mean()#(0, keepdim=True)
-        # qs = qs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]
+        # qs = qs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # reward to go
         qs -= qs.mean(0, keepdim=True)
         return qs.detach()
 
@@ -223,8 +222,8 @@ class SynthEnvironment(Environment):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        # self.optim_g.param_groups[0]['lr'] *= 0.1
-        # self.optim_d.param_groups[0]['lr'] *= 0.1
+        self.optim_g.param_groups[0]['lr'] *= 0.1
+
         half_batch = self.opts.batch_size // 2
         oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
         for epoch in range(1, self.opts.adv_train_iters+1):
@@ -244,11 +243,7 @@ class SynthEnvironment(Environment):
             # train D
             oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
 
-            gen_seqs, _ = self.g.rollout(
-                self.init_toks[:half_batch], self.opts.seqlen)
-            gen_seqs = torch.cat(gen_seqs, -1).data
-
-            batch_toks = torch.cat((oracle_toks, gen_seqs), 0)
+            batch_toks = torch.cat((oracle_toks, gen_seqs.data[:half_batch]), 0)
             self._labels[:half_batch] = LABEL_REAL
             self._labels[half_batch:] = LABEL_GEN
 
@@ -258,9 +253,10 @@ class SynthEnvironment(Environment):
             self.optim_d.zero_grad()
             loss_g.backward(create_graph=self.opts.grad_reg)
             loss_d.backward(create_graph=self.opts.grad_reg)
-            gnorm = sum(map(self._get_grad_norm, (self.g, self.d)))
+            gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
+            gnorm = gnormg * 100 + gnormd * 1
             if self.opts.grad_reg:
-                (gnorm * 0.0001).backward()
+                gnorm.backward()
             self.optim_g.step()
             self.optim_d.step()
 
