@@ -60,7 +60,7 @@ def _phase(env, phase):
 
     snap_file = os.path.join(phase_dir, 'state.pth')
     if os.path.isfile(snap_file):
-        env.state = torch.load(snap_file)
+        env.state = torch.load(env)
         yield lambda: None
         return
 
@@ -78,7 +78,7 @@ def _phase(env, phase):
 
     yield runner
 
-    torch.save(env.state, snap_file)
+    torch.save(env, snap_file)
     logger.removeHandler(file_logger)
 
 

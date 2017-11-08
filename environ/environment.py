@@ -81,21 +81,23 @@ class Environment(object):
 
         return parser
 
-    @property
-    def state(self):
-        """Returns the stateful components of the Environment."""
-        return [getattr(self, item).state_dict() for item in self._STATEFUL]
+    def __getstate__(self):
+        return {item: getattr(self, item).state_dict()
+                for item in self._STATEFUL}
 
-    @state.setter
-    def state(self, state):
-        """Restores the state of this Environment."""
-        for item, item_state in zip(self._STATEFUL, state):
-            if 'state' in item_state and not item_state['state']:
-                continue  # don't load unstepped optim_states
+    def __setstate__(self, state):
+        for item_name, item_state in state.items():
+            item = getattr(self, item_name, None)
+            if item is None:
+                logging.warn(f'WARNING: missing {item_name}')
+                continue  # don't load missing modules/optimizers
+            if (isinstance(item, torch.optim.Optimizer) and
+                not item_state['state']):
+                continue  # ignore unstepped optimizers
             try:
-                getattr(self, item).load_state_dict(item_state)
-            except (RuntimeError, KeyError):
-                logging.warn(f'WARNING: could not load state for {item}')
+                item.load_state_dict(item_state)
+            except (RuntimeError, KeyError, ValueError):
+                logging.warn(f'WARNING: could not load state for {item_name}')
         self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
         self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
 
