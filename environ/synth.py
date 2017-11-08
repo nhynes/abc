@@ -9,7 +9,7 @@ from torch.autograd import Variable
 from torch.nn import functional as nnf
 
 import common
-from common import LABEL_GEN, LABEL_REAL, EPS
+from common import LABEL_GEN, LABEL_REAL
 import dataset
 import model
 
@@ -127,15 +127,16 @@ class SynthEnvironment(Environment):
         return acc_gen, acc_oracle
 
     @staticmethod
-    def _get_entropy(t, discount_rate=None):
+    def _get_entropy(log_probs, discount_rate=None):
         # assumes distributions are along the last dimension
-        infos = (t * (t + EPS).log())
+        infos = log_probs.exp() * log_probs
         if discount_rate:
-            t_sz = [sz if i == 0 else 1 for i, sz in enumerate(t.size())]
-            discount = t.data.new(*t_sz).fill_(1)
+            sz = [1] * log_probs.ndimensions()
+            sz[0] = log_probs.size(0)
+            discount = t.data.new(*sz).fill_(1)
             discount[1:] *= discount_rate
             discount.cumprod(0, out=discount)
-            infos = infos * Variable(discount)
+            infos *= Variable(discount)
         return -infos.sum(-1).mean()
 
     def pretrain_g(self):
@@ -147,8 +148,8 @@ class SynthEnvironment(Environment):
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             train_loss = entropy = 0
             for batch in dataloader:
-                loss, gen_probs = self._forward_g_pretrain(batch)
-                entropy += _get_entropy(gen_probs).data[0]
+                loss, gen_log_probs = self._forward_g_pretrain(batch)
+                entropy += self._get_entropy(gen_log_probs).data[0]
                 train_loss += loss.data[0]
 
                 self.optim_g.zero_grad()
@@ -174,7 +175,8 @@ class SynthEnvironment(Environment):
             train_loss = 0
             gnorm = 0
             for batch in dataloader:
-                loss = self._forward_d(batch)
+                loss, pred_log_probs = self._forward_d(batch)
+
                 train_loss += loss.data[0]
 
                 self.optim_d.zero_grad()
@@ -244,16 +246,16 @@ class SynthEnvironment(Environment):
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             # train G
-            gen_seqs, gen_probs = self.g.rollout(
+            gen_seqs, gen_log_probs = self.g.rollout(
                 self.init_toks, self.opts.seqlen)
             gen_seqs = torch.cat(gen_seqs, -1)  # T*N
-            gen_probs = torch.stack(gen_probs)  # T*N*V
+            gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
 
             qs = self._get_qs(gen_seqs)  # T*N
 
             gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
                 -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
-            entropy = self._get_entropy(gen_probs, discount_rate=0.9)
+            entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
             loss_g = -(qs * gen_seq_probs).sum(0).mean() - entropy * 1e-2
 
             # train D
@@ -263,9 +265,9 @@ class SynthEnvironment(Environment):
             self._labels[:half_batch] = LABEL_REAL
             self._labels[half_batch:] = LABEL_GEN
 
-            loss_d, d_probs = self._forward_d((batch_toks, self._labels),
+            loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
                                               has_init=False)
-            loss_d = loss_d + self._get_entropy(d_probs.exp()) * 0.001
+            loss_d = loss_d - self._get_entropy(d_log_probs.exp()) * 0.001
 
             self.optim_g.zero_grad()
             self.optim_d.zero_grad()

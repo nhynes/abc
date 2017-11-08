@@ -59,21 +59,22 @@ class RNNGenerator(nn.Module):
         gen_toks, gen_state = init_state
 
         gen_seqs = []
-        gen_probs = []
+        gen_log_probs = []
         for i in range(ro_steps):
-            tok_probs, gen_state = self(gen_toks, gen_state)
-            tok_probs = tok_probs[-1].exp()                      # N*V
-            gen_toks = torch.multinomial(tok_probs, 1).detach()  # N*1
+            tok_log_probs, gen_state = self(gen_toks, gen_state)
+            tok_log_probs = tok_log_probs[-1]  # N*V
+            tok_probs = tok_log_probs.exp()
+            gen_toks = torch.multinomial(tok_log_probs.exp(), 1).detach()  # N*1
             gen_seqs.append(gen_toks)
-            gen_probs.append(tok_probs)
+            gen_log_probs.append(tok_log_probs)
             if i == 0 and return_first_state:
                 th = torch.cuda if gen_toks.is_cuda else torch
                 first_state = (gen_state, th.get_rng_state())
         # gen_seqs = torch.cat(gen_seqs, -1)
 
         if return_first_state:
-            return gen_seqs, gen_probs, first_state
-        return gen_seqs, gen_probs
+            return gen_seqs, gen_log_probs, first_state
+        return gen_seqs, gen_log_probs
 
     def parameters(self, dx2=False):
         """
@@ -100,6 +101,7 @@ def test_rnn_generator():
     import common
 
     batch_size = 4
+    seqlen = 4
     vocab_size = 32
     word_emb_dim = 8
     gen_dim = 12
@@ -116,9 +118,11 @@ def test_rnn_generator():
     gen_probs, gen_state = gen(toks=gen_toks, prev_state=gen_state)
 
     # test basic rollout
-    init_toks = Variable(torch.LongTensor(batch_size, 4).fill_(1))
-    ro_seqs, _ = gen.rollout(init_toks, 4, 0)
-    assert len(ro_seqs) == 4
+    init_toks = Variable(torch.LongTensor(batch_size, seqlen).fill_(1))
+    ro_seqs, ro_log_probs = gen.rollout(init_toks, seqlen, 0)
+    assert len(ro_seqs) == seqlen and len(ro_log_probs) == seqlen
+    assert torch.np.allclose(
+        torch.stack(ro_log_probs).data.exp().sum(-1).numpy(), 1)
 
     # test reproducability
     init_rand_state = torch.get_rng_state()
