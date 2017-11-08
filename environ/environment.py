@@ -40,7 +40,7 @@ class Environment(object):
         parser = argparse.ArgumentParser(add_help=False)
 
         # general
-        parser.add_argument('--seed', default=1, type=int)
+        parser.add_argument('--seed', default=42, type=int)
         parser.add_argument('--debug', action='store_true')
 
         # data

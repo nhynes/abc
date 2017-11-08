@@ -6,6 +6,8 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 
+import environ
+
 
 TYPES = ('cnn', 'rnn')
 CNN, RNN = TYPES
@@ -44,9 +46,9 @@ class Discriminator(nn.Module):
     def __init__(self, vocab_size, word_emb_dim, **kwargs):
         super(Discriminator, self).__init__()
 
-        pad_idx = None if kwargs.get('env', None) == 'synth' else 0
+        padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
         self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
-                                     padding_idx=pad_idx)
+                                     padding_idx=padding_idx)
 
     def parameters(self, dx2=False):
         """

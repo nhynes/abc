@@ -43,14 +43,15 @@ class RNNGenerator(nn.Module):
 
     def rollout(self, init_state, ro_steps, return_first_state=False):
         """
-        init_state: (N*t : toks, _ : hidden state); t < seqlen
+        init_state:
+            toks: N*T or (toks, prev_hidden state)
         ro_steps: roll out this many steps
 
-        This method does not modify the global rand state.
+        This method does not modify the global random state.
 
         Returns:
-            a list of (T-t) samples of size N*1,
-            T*N*V tensor of word log-probs,
+            a list of T samples of size N*1,
+            a list of T word log-probs of size N*V
         """
 
         if isinstance(init_state, Variable):

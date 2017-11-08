@@ -20,10 +20,18 @@ def ngram_count(seqs, n):
     counts = counts / counts.sum()
     return {tuple(ngram): count for ngram, count in zip(ngrams, counts)}
 
-def sample_gen(env, num_samps=10000):
+def sample_gen(env, num_samps=10000, gen='g', return_probs=False):
     samps = []
-    num_batches = (num_samps + len(env.init_toks)) // len(env.init_toks)
+    probs = []
+    gen = getattr(env, gen)
+    num_batches = (num_samps + len(env.ro_init_toks)) // len(env.ro_init_toks)
     for _ in range(num_batches):
-        ro, ro_probs = env.g.rollout(env.init_toks, 20)
-        samps.append(torch.cat([r.cpu() for r in ro], -1))
-    return torch.cat(samps, 0).data.numpy()
+        ro, ro_probs = gen.rollout(env.ro_init_toks, 20)
+        samps.append(torch.cat(ro, -1).data.cpu())
+        if return_probs:
+            probs.append(torch.stack(ro_probs).data.cpu())
+
+    samps = torch.cat(samps, 0).numpy()
+    if return_probs:
+        return samps, torch.cat(probs, 0).numpy()
+    return samps
