@@ -241,6 +241,7 @@ class SynthEnvironment(Environment):
 
         half_batch = self.opts.batch_size // 2
         oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
+
         for epoch in range(1, self.opts.adv_train_iters+1):
             # train G
             gen_seqs, gen_probs = self.g.rollout(
@@ -275,7 +276,8 @@ class SynthEnvironment(Environment):
             if self.opts.grad_reg:
                 gnorm.backward()
             self.optim_g.step()
-            self.optim_d.step()
+            if epoch % self.opts.d_update_freq == 0:
+                self.optim_d.step()
 
             acc_gen, acc_oracle = self._compute_test_acc()
             test_nll = self._compute_test_nll()
