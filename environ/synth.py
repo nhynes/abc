@@ -26,6 +26,7 @@ class SynthEnvironment(Environment):
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
         parser.add_argument('--grad-reg', action='store_true')
+        parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
             seqlen=20,
             vocab_size=5000,
@@ -53,6 +54,11 @@ class SynthEnvironment(Environment):
 
         self.oracle = self._create_oracle().cuda()
         self.oracle_dataset = self._create_dataset(self.oracle, LABEL_REAL)
+
+        if self.opts.use_oracle_w2v:
+            self.g.word_emb = self.d.word_emb = model.utils.DontTrain(
+                self.oracle.word_emb)
+            self.opts.pretrain_g_epochs = 10
 
         with common.rand_state(torch.cuda, -1):
             self.oracle_test_toks, _ = self.oracle.rollout(self.init_toks,
