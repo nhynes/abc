@@ -22,6 +22,7 @@ class Environment(object):
 
         self.g = model.generator.create(**vars(opts)).cuda()
         self.d = model.discriminator.create(**vars(opts)).cuda()
+        self.tgt_g = model.generator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
@@ -74,7 +75,7 @@ class Environment(object):
         parser.add_argument('--adv-g-iters', default=150, type=int)
         parser.add_argument('--adv-d-iters', default=5, type=int)
         parser.add_argument('--adv-d-epochs', default=3, type=int)
-        parser.add_argument('--num-rollouts', default=16, type=int)
+        parser.add_argument('--num-rollouts', default=8, type=int)
         parser.add_argument('--d-update-freq', default=5, type=int)
 
         # output
@@ -116,6 +117,26 @@ class Environment(object):
         """Adversarially train G against D."""
         raise NotImplementedError()
 
+    def get_tok_log_probs(self, gen, toks):
+        """
+        Returns log probabilities of tokens under a generative model.
+
+        Args:
+            gen: the generative model
+            toks: N*T
+
+        Returns:
+            tok_log_probs: T*N*V
+        """
+        tok_log_probs, _ = gen(torch.cat((self.init_toks, toks), 1))
+        return tok_log_probs[:-1]
+
+    def compute_acc(self, probs, label):
+        """Computes the accuracy given prob Variable and and label."""
+        self._labels.fill_(label)
+        preds = probs.data.max(1)[1]
+        return (preds == self._labels).float().mean()
+
     def _create_dataloader(self, dataset):
         dl_opts = {'batch_size': self.opts.batch_size,
                    'num_workers': self.opts.nworkers,
@@ -129,9 +150,9 @@ class Environment(object):
             toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
         flat_tgts = toks[:, 1:].t().contiguous().view(-1)
 
-        gen_probs, _ = self.g(toks[:, :-1])
-        flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-        return nnf.nll_loss(flat_gen_probs, flat_tgts), gen_probs
+        gen_log_probs, _ = self.g(toks[:, :-1])
+        flat_gen_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))
+        return nnf.nll_loss(flat_gen_log_probs, flat_tgts), gen_log_probs
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
@@ -140,3 +161,13 @@ class Environment(object):
 
         d_log_probs = self.d(toks[:, has_init:])
         return nnf.nll_loss(d_log_probs, labels), d_log_probs
+
+    @staticmethod
+    def _gather_act_probs(acts, probs):
+        """
+        Returns probs for each action: (N*T)
+
+        acts: N*T
+        probs: T*N*V
+        """
+        return probs.transpose(0, 1).gather(-1, acts.unsqueeze(-1)).squeeze(-1)

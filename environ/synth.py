@@ -33,7 +33,7 @@ class SynthEnvironment(Environment):
             vocab_size=5000,
             g_word_emb_dim=32,
             d_word_emb_dim=32,
-            pretrain_g_epochs=50,
+            pretrain_g_epochs=50,  # try 10 when using oracle w2v
             pretrain_d_epochs=10,
             adv_train_iters=750,
             gen_dim=32,
@@ -56,9 +56,8 @@ class SynthEnvironment(Environment):
         self.oracle_dataset = self._create_dataset(self.oracle, LABEL_REAL)
 
         if self.opts.use_oracle_w2v:
-            self.g.word_emb = self.d.word_emb = model.utils.DontTrain(
-                self.oracle.word_emb)
-            self.opts.pretrain_g_epochs = 10
+            for net in (self.g, self.d, self.tgt_g):
+                net.word_emb = model.utils.DontTrain(self.oracle.word_emb)
 
         with common.rand_state(torch.cuda, -1):
             self.oracle_test_toks, _ = self.oracle.rollout(self.init_toks,
@@ -88,20 +87,14 @@ class SynthEnvironment(Environment):
         oracle: a Generator
         toks: [N]*T
         """
-        gen_probs, _ = self.oracle(torch.cat([self.init_toks] + toks, 1))
-        gen_probs = gen_probs[:-1]
-        flat_gen_probs = gen_probs.view(-1, gen_probs.size(-1))
-        flat_toks = torch.cat(toks).squeeze(1)
-        nll = nnf.nll_loss(flat_gen_probs, flat_toks).data[0]
+        if isinstance(toks, list):
+            toks = torch.cat(toks).view(len(toks), -1)  # T*N
+        gen_log_probs = self.get_tok_log_probs(self.oracle, toks.t())
+        flat_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))  # T*N*V
+        nll = nnf.nll_loss(flat_log_probs, toks.view(-1)).data[0]
         if return_probs:
-            return nll, gen_probs
+            return nll, gen_log_probs
         return nll
-
-    def compute_acc(self, probs, label):
-        """Computes the accuracy given prob Variable and and label."""
-        self._labels.fill_(label)
-        preds = probs.data.max(1)[1]
-        return (preds == self._labels).float().mean()
 
     def _compute_test_nll(self, num_samples=256):
         test_nll = 0
@@ -131,12 +124,11 @@ class SynthEnvironment(Environment):
         # assumes distributions are along the last dimension
         infos = log_probs.exp() * log_probs
         if discount_rate:
-            sz = [1] * log_probs.ndimensions()
-            sz[0] = log_probs.size(0)
-            discount = t.data.new(*sz).fill_(1)
+            sz = [log_probs.size(0)] + [1]*(log_probs.ndimension() - 1)
+            discount = log_probs.data.new(*sz).fill_(1)
             discount[1:] *= discount_rate
             discount.cumprod(0, out=discount)
-            infos *= Variable(discount)
+            infos = infos * Variable(discount)
         return -infos.sum(-1).mean()
 
     def pretrain_g(self):
@@ -192,25 +184,27 @@ class SynthEnvironment(Environment):
                          f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
                          f'gnorm: {gnorm:.2f}')
 
-    def _get_qs(self, gen_seqs):
+    def _get_advantages(self, gen_seqs):
         qs = Variable(self._qs.zero_())  # T*N
 
         qs[-1] = self.d(gen_seqs)[:, LABEL_REAL].exp()
 
         if self.opts.num_rollouts == 0:
-            return qs.detach()
+            qs.data[:-1] = qs.data[None, -1].expand(qs.size(0) - 1, qs.size(1))
+            return qs.t().detach()
 
         rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
 
         ro_rng = torch.cuda.get_rng_state()
         _, ro_hid = self.g(self.ro_init_toks)
         for n in range(1, self.opts.seqlen):
+            # ro_seqs, _  = self.g.rollout(rep_gen_seqs[:, :n], self.opts.seqlen - n)
             ro_state = (rep_gen_seqs[:, n-1].unsqueeze(-1), ro_hid)
             ro_seqs, _, (ro_hid, ro_rng) = self.g.rollout(
                 ro_state, self.opts.seqlen - n, return_first_state=True)
             full_ro = torch.cat([rep_gen_seqs[:, :n]] + ro_seqs, -1)
             assert full_ro.size(1) == self.opts.seqlen
-
+            #
             q = self.d(full_ro)[:, LABEL_REAL].exp()
             # LABEL_G gives cost, LABEL_REAL gives reward
             qs[n-1] = q.view(self.opts.num_rollouts, -1).mean(0)
@@ -218,8 +212,9 @@ class SynthEnvironment(Environment):
             torch.cuda.set_rng_state(ro_rng)
 
         # qs = qs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # reward to go
-        qs -= qs.mean(0, keepdim=True)
-        return qs.detach()
+        qs -= qs.mean()#0, keepdim=True)
+        qs /= qs.std()#0, keepdim=True)
+        return qs.t().detach()
 
     @staticmethod
     def _get_grad_norm(mod):
@@ -244,47 +239,83 @@ class SynthEnvironment(Environment):
         half_batch = self.opts.batch_size // 2
         oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
 
+        self.tgt_g.load_state_dict(self.g.state_dict())
+
         for epoch in range(1, self.opts.adv_train_iters+1):
-            # train G
-            gen_seqs, gen_log_probs = self.g.rollout(
-                self.init_toks, self.opts.seqlen)
-            gen_seqs = torch.cat(gen_seqs, -1)  # T*N
-            gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
+            self.optim_g.zero_grad()
+            for _ in range(10):
+                # train G
+                gen_seqs, gen_log_probs = self.g.rollout(
+                    self.init_toks, self.opts.seqlen)
+                gen_seqs = torch.cat(gen_seqs, -1)  # N*T
 
-            qs = self._get_qs(gen_seqs)  # T*N
+                gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
+                tgt_log_probs = self.get_tok_log_probs(self.tgt_g, gen_seqs)
 
-            gen_seq_probs = gen_probs.gather(  # T*N*V -> T*N
-                -1, gen_seqs.t().unsqueeze(-1)).squeeze(-1)
-            entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
-            loss_g = -(qs * gen_seq_probs).sum(0).mean() - entropy * 1e-2
+                gen_seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
+                tgt_seq_log_probs = self._gather_act_probs(gen_seqs, tgt_log_probs).detach()
+                policy_ratios = (gen_seq_log_probs - tgt_seq_log_probs).exp()
+
+                advantages = self._get_advantages(gen_seqs)  # N*T
+
+                entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
+                clip_eps = 0.2
+
+                # g_score = torch.min(  # N*T
+                #     advantages * policy_ratios,
+                #     advantages * policy_ratios.clamp(1 - clip_eps, 1 + clip_eps))
+
+                # policy_ratios.clamp_(1 - clip_eps, 1 + clip_eps)
+                # g_score = advantages * policy_ratios
+
+                g_score = advantages * gen_seq_log_probs
+
+                loss_g = -g_score.sum(1).mean() - entropy * 1e-4
+                loss_g.backward(create_graph=self.opts.grad_reg)
+
+            self.tgt_g.load_state_dict(self.g.state_dict())
+            self.optim_g.step()
 
             # train D
-            oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
-
-            batch_toks = torch.cat((oracle_toks, gen_seqs.data[:half_batch]), 0)
-            self._labels[:half_batch] = LABEL_REAL
-            self._labels[half_batch:] = LABEL_GEN
-
-            loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
-                                              has_init=False)
-            loss_d = loss_d - self._get_entropy(d_log_probs.exp()) * 0.001
-
-            self.optim_g.zero_grad()
             self.optim_d.zero_grad()
-            loss_g.backward(create_graph=self.opts.grad_reg)
-            loss_d.backward(create_graph=self.opts.grad_reg)
-            gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
-            gnorm = gnormg * 100 + gnormd * 1
-            if self.opts.grad_reg:
-                gnorm.backward()
-            self.optim_g.step()
-            if epoch % self.opts.d_update_freq == 0:
-                self.optim_d.step()
+            for _ in range(1):
+                oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
+
+                gen_seqs, gen_probs = self.g.rollout(
+                    self.init_toks[:half_batch], self.opts.seqlen)
+                gen_seqs = torch.cat(gen_seqs, -1)  # T*N
+
+                batch_toks = torch.cat(
+                    (oracle_toks, gen_seqs[:half_batch].data))
+                self._labels[:half_batch] = LABEL_REAL
+                self._labels[half_batch:] = LABEL_GEN
+
+                loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
+                                                      has_init=False)
+                loss_d = loss_d - self._get_entropy(d_log_probs) * 0.001
+
+                loss_d.backward()
+            self.optim_d.step()
+
+            # self.optim_d.zero_grad()
+            # self.optim_g.zero_grad()
+            # loss_d.backward(create_graph=self.opts.grad_reg)
+            #
+            # self.tgt_g.load_state_dict(self.g.state_dict())
+            #
+            # gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
+            # gnorm = gnormg * 0.1 + gnormd * 0.1
+            # if self.opts.grad_reg:
+            #     gnorm.backward()
+            #
+            # self.optim_g.step()
+            # if epoch % self.opts.d_update_freq == 0:
+            #     self.optim_d.step()
 
             acc_gen, acc_oracle = self._compute_test_acc()
             test_nll = self._compute_test_nll()
             logging.info(
                 f'[{epoch}] nll: {test_nll:.3f}  '
                 f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
-                f'gnorm: {gnorm.data[0]:.2f}  '
+                # f'gnorm: {gnorm.data[0]:.2f}  '
                 f'H: {entropy.data[0]:.2f}')
