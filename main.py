@@ -79,15 +79,18 @@ def _phase(env, phase, opts):
         handler = logging.FileHandler(log_path, mode='w')
         handler.setLevel(lvl)
         logger.addHandler(handler)
+        return handler
 
     log_prefixes = [opts.log_prefix]*bool(opts.log_prefix)
-    _add_file_handler(logging.INFO, log_prefixes)
-    _add_file_handler(logging.DEBUG, log_prefixes + ['debug'])
+    file_handlers = [
+        _add_file_handler(logging.INFO, log_prefixes),
+        _add_file_handler(logging.DEBUG, log_prefixes + ['debug']),
+    ]
 
     yield runner
 
     torch.save(env.state, snap_file)
-    logger.removeHandler(file_logger)
+    map(logger.removeHandler, file_handlers)
 
 
 if __name__ == '__main__':
