@@ -243,7 +243,7 @@ class SynthEnvironment(Environment):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        self.optim_g.param_groups[0]['lr'] *= 0.1
+        # self.optim_g.param_groups[0]['lr'] *= 0.1
 
         half_batch = self.opts.batch_size // 2
         oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
@@ -252,7 +252,7 @@ class SynthEnvironment(Environment):
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             self.optim_g.zero_grad()
-            for _ in range(10):
+            for _ in range(1):
                 # train G
                 gen_seqs, gen_log_probs = self.g.rollout(
                     self.init_toks, self.opts.seqlen)
@@ -268,21 +268,27 @@ class SynthEnvironment(Environment):
                 advantages = self._get_advantages(gen_seqs)  # N*T
 
                 entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
-                clip_eps = 0.2
+                clip_eps = 0.1
 
-                # g_score = torch.min(  # N*T
-                #     advantages * policy_ratios,
-                #     advantages * policy_ratios.clamp(1 - clip_eps, 1 + clip_eps))
+                g_score = torch.min(  # N*T
+                    advantages * policy_ratios,
+                    advantages * policy_ratios.clamp(1 - clip_eps, 1 + clip_eps))
 
                 # policy_ratios.clamp_(1 - clip_eps, 1 + clip_eps)
                 # g_score = advantages * policy_ratios
 
-                g_score = advantages * gen_seq_log_probs
+                # g_score = advantages * gen_seq_log_probs
+
+                _g_score = advantages * policy_ratios
+                clipped = (_g_score != g_score).data.float().mean()
 
                 loss_g = -g_score.sum(1).mean() - entropy * 1e-4
                 loss_g.backward(create_graph=self.opts.grad_reg)
 
-            self.tgt_g.load_state_dict(self.g.state_dict())
+            if epoch % 5 == 0:
+                self.tgt_g.load_state_dict(self.g.state_dict())
+            print(self._get_grad_norm(self.g).data[0])
+            nn.utils.clip_grad_norm(self.g.parameters(), 5)
             self.optim_g.step()
 
             # train D
@@ -327,4 +333,5 @@ class SynthEnvironment(Environment):
                 f'[{epoch}] nll: {test_nll:.3f}  '
                 f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
                 # f'gnorm: {gnorm.data[0]:.2f}  '
+                f'clipped: {clipped:.4f}  '
                 f'H: {entropy.data[0]:.2f}')
