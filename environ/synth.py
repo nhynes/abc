@@ -98,7 +98,7 @@ class SynthEnvironment(Environment):
 
     def _compute_test_nll(self, num_samples=256):
         test_nll = 0
-        num_test_batches = num_samples // len(self.init_toks)
+        num_test_batches = max(num_samples // len(self.init_toks), 1)
         with common.rand_state(torch.cuda, -1):
             for _ in range(num_test_batches):
                 gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
@@ -108,7 +108,7 @@ class SynthEnvironment(Environment):
 
     def _compute_test_acc(self, num_samples=256):
         acc_gen = acc_oracle = 0
-        num_test_batches = num_samples // len(self.init_toks)
+        num_test_batches = max(num_samples // len(self.init_toks), 1)
         with common.rand_state(torch.cuda, -1):
             for _ in range(num_test_batches):
                 gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
@@ -252,47 +252,35 @@ class SynthEnvironment(Environment):
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             self.optim_g.zero_grad()
-            for _ in range(10):
+            for _ in range(2):
                 # train G
                 gen_seqs, gen_log_probs = self.g.rollout(
                     self.init_toks, self.opts.seqlen)
                 gen_seqs = torch.cat(gen_seqs, -1)  # N*T
 
                 gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
-                tgt_log_probs = self.get_tok_log_probs(self.tgt_g, gen_seqs)
-
                 gen_seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
-                tgt_seq_log_probs = self._gather_act_probs(gen_seqs, tgt_log_probs).detach()
-                policy_ratios = (gen_seq_log_probs - tgt_seq_log_probs).exp()
 
                 advantages = self._get_advantages(gen_seqs)  # N*T
 
                 entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
-                clip_eps = 0.2
-
-                # g_score = torch.min(  # N*T
-                #     advantages * policy_ratios,
-                #     advantages * policy_ratios.clamp(1 - clip_eps, 1 + clip_eps))
-
-                # policy_ratios.clamp_(1 - clip_eps, 1 + clip_eps)
-                # g_score = advantages * policy_ratios
-
-                g_score = advantages * gen_seq_log_probs
+                g_score = gen_seq_log_probs * advantages
 
                 loss_g = -g_score.sum(1).mean() - entropy * 1e-4
                 loss_g.backward(create_graph=self.opts.grad_reg)
-
-            self.tgt_g.load_state_dict(self.g.state_dict())
-            self.optim_g.step()
+            if not self.opts.grad_reg:
+                self.optim_g.step()
 
             # train D
             self.optim_d.zero_grad()
-            for _ in range(1):
+            for i in range(1):
                 oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
 
-                gen_seqs, gen_probs = self.g.rollout(
-                    self.init_toks[:half_batch], self.opts.seqlen)
-                gen_seqs = torch.cat(gen_seqs, -1)  # T*N
+                if i == 0 and not self.opts.grad_reg:
+                    # just stepped g; generate new seqs
+                    gen_seqs, gen_probs = self.g.rollout(
+                        self.init_toks[:half_batch], self.opts.seqlen)
+                    gen_seqs = torch.cat(gen_seqs, -1)  # T*N
 
                 batch_toks = torch.cat(
                     (oracle_toks, gen_seqs[:half_batch].data))
@@ -301,25 +289,20 @@ class SynthEnvironment(Environment):
 
                 loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
                                                       has_init=False)
+
                 loss_d = loss_d - self._get_entropy(d_log_probs) * 0.001
+                loss_d.backward(create_graph=self.opts.grad_reg)
 
-                loss_d.backward()
-            self.optim_d.step()
-
-            # self.optim_d.zero_grad()
-            # self.optim_g.zero_grad()
-            # loss_d.backward(create_graph=self.opts.grad_reg)
-            #
             # self.tgt_g.load_state_dict(self.g.state_dict())
-            #
-            # gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
-            # gnorm = gnormg * 0.1 + gnormd * 0.1
-            # if self.opts.grad_reg:
-            #     gnorm.backward()
-            #
-            # self.optim_g.step()
-            # if epoch % self.opts.d_update_freq == 0:
-            #     self.optim_d.step()
+
+            gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
+            gnorm = gnormg * 50.0 + gnormd * 0.1
+            # nn.utils.clip_grad_norm(self.g.parameters(), 5)
+            # nn.utils.clip_grad_norm(self.d.parameters(), 1)
+            if self.opts.grad_reg:
+                gnorm.backward()
+                self.optim_g.step()
+            self.optim_d.step()
 
             acc_gen, acc_oracle = self._compute_test_acc()
             test_nll = self._compute_test_nll()
