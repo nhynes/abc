@@ -184,37 +184,46 @@ class SynthEnvironment(Environment):
                          f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
                          f'gnorm: {gnorm:.2f}')
 
-    def _get_advantages(self, gen_seqs):
-        qs = Variable(self._qs.zero_())  # T*N
+    def _get_qs(self, g_ro, rep_gen_seqs):
+        qs = Variable(torch.cuda.FloatTensor(
+            self.opts.seqlen, self.opts.batch_size).zero_())
 
-        qs[-1] = self.d(gen_seqs)[:, LABEL_REAL].exp()
+        qs[-1] = self.d(rep_gen_seqs[:qs.size(1)])[:, LABEL_REAL]
 
         if self.opts.num_rollouts == 0:
             qs.data[:-1] = qs.data[None, -1].expand(qs.size(0) - 1, qs.size(1))
+            qs.data.exp_()
             return qs.t().detach()
 
-        rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
-
         ro_rng = torch.cuda.get_rng_state()
-        _, ro_hid = self.g(self.ro_init_toks)
+        _, ro_hid = g_ro(self.ro_init_toks)
         for n in range(1, self.opts.seqlen):
-            # ro_seqs, _  = self.g.rollout(rep_gen_seqs[:, :n], self.opts.seqlen - n)
+            # ro_seqs, _  = g_ro.rollout(rep_gen_seqs[:,:n], self.opts.seqlen-n)
+
+            torch.cuda.set_rng_state(ro_rng)
             ro_state = (rep_gen_seqs[:, n-1].unsqueeze(-1), ro_hid)
-            ro_seqs, _, (ro_hid, ro_rng) = self.g.rollout(
+            ro_seqs, _, (ro_hid, ro_rng) = g_ro.rollout(
                 ro_state, self.opts.seqlen - n, return_first_state=True)
             full_ro = torch.cat([rep_gen_seqs[:, :n]] + ro_seqs, -1)
             assert full_ro.size(1) == self.opts.seqlen
-            #
-            q = self.d(full_ro)[:, LABEL_REAL].exp()
+
+            q = self.d(full_ro).view(self.opts.num_rollouts, -1, 2)
             # LABEL_G gives cost, LABEL_REAL gives reward
-            qs[n-1] = q.view(self.opts.num_rollouts, -1).mean(0)
+            qs[n-1] = q.mean(0)[:, LABEL_REAL]
 
-            torch.cuda.set_rng_state(ro_rng)
-
-        # qs = qs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # reward to go
-        qs -= qs.mean()#0, keepdim=True)
-        qs /= qs.std()#0, keepdim=True)
+        qs.data.exp_()
         return qs.t().detach()
+
+    def _get_advantages(self, gen_seqs):
+        rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
+        qs_g = self._get_qs(self.g, rep_gen_seqs)
+
+        advs = qs_g
+
+        # advs = advs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # adv to go
+        advs -= advs.mean()
+        advs /= advs.std()
+        return advs.detach()
 
     @staticmethod
     def _get_grad_norm(mod):

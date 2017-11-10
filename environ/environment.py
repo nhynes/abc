@@ -32,8 +32,7 @@ class Environment(object):
         self.init_toks = self.ro_init_toks[:opts.batch_size].detach()
 
         self._labels = torch.cuda.LongTensor(self.opts.batch_size)
-        self._qs = torch.cuda.FloatTensor(opts.seqlen, opts.batch_size)
-        self._inv_idx = torch.arange(opts.batch_size-1, -1, -1).long().cuda()
+        # self._inv_idx = torch.arange(opts.batch_size-1, -1, -1).long().cuda()
 
     @classmethod
     def get_opt_parser(cls):
