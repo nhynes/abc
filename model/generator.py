@@ -26,26 +26,27 @@ class RNNGenerator(nn.Module):
         if rrnn:
             gen_dim *= 10
         self.gen = nn.LSTM(word_emb_dim, gen_dim, num_layers=num_layers)
+        self.word_dec = BottledLinear(gen_dim, vocab_size)
 
-        self.word_dec = nn.Sequential(
-            BottledLinear(gen_dim, vocab_size),
-            BottledLogSoftmax(),
-        )
-
-    def forward(self, toks, prev_state=None, **unused_kwargs):
+    def forward(self, toks, prev_state=None, temperature=1, **unused_kwargs):
         """
         toks: N*T
         """
         wembs = self.word_emb(toks).transpose(0, 1) # T*N*d_wemb
         tok_embs, next_state = self.gen(wembs, prev_state)
-        tok_probs = self.word_dec(tok_embs)         # T*N*vocab_size
+        logits = self.word_dec(tok_embs)  # T*N*vocab_size
+        if temperature != 1:
+            logits /= temperature
+        tok_probs = BottledLogSoftmax()(logits)
         return tok_probs, next_state
 
-    def rollout(self, init_state, ro_steps, return_first_state=False):
+    def rollout(self, init_state, ro_steps, return_first_state=False,
+                temperature=1):
         """
         init_state:
             toks: N*T or (toks, prev_hidden state)
         ro_steps: roll out this many steps
+        temperature: positive scalar parameter that raises entropy
 
         This method does not modify the global random state.
 
@@ -61,9 +62,9 @@ class RNNGenerator(nn.Module):
         gen_seqs = []
         gen_log_probs = []
         for i in range(ro_steps):
-            tok_log_probs, gen_state = self(gen_toks, gen_state)
+            tok_log_probs, gen_state = self(
+                gen_toks, gen_state, temperature=temperature)
             tok_log_probs = tok_log_probs[-1]  # N*V
-            tok_probs = tok_log_probs.exp()
             gen_toks = torch.multinomial(tok_log_probs.exp(), 1).detach()  # N*1
             gen_seqs.append(gen_toks)
             gen_log_probs.append(tok_log_probs)
