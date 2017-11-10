@@ -76,6 +76,9 @@ class Environment(object):
         parser.add_argument('--adv-d-epochs', default=3, type=int)
         parser.add_argument('--num-rollouts', default=8, type=int)
         parser.add_argument('--d-update-freq', default=5, type=int)
+        parser.add_argument('--discount', default=0.9, type=float)
+        parser.add_argument('--g-ent-reg', default=1e-4, type=float)
+        parser.add_argument('--d-ent-reg', default=1e-4, type=float)
 
         # output
         parser.add_argument('--dispfreq', default=10, type=int)

@@ -25,7 +25,7 @@ class SynthEnvironment(Environment):
         parser.add_argument(
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
-        parser.add_argument('--grad-reg', action='store_true')
+        parser.add_argument('--grad-reg', default=0, type=float)
         parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
             num_gen_samps=100000,
@@ -141,7 +141,8 @@ class SynthEnvironment(Environment):
             train_loss = entropy = 0
             for batch in dataloader:
                 loss, gen_log_probs = self._forward_g_pretrain(batch)
-                entropy += self._get_entropy(gen_log_probs).data[0]
+                entropy += self._get_entropy(
+                    gen_log_probs, discount_rate=self.opts.discount).data[0]
                 train_loss += loss.data[0]
 
                 self.optim_g.zero_grad()
@@ -263,11 +264,13 @@ class SynthEnvironment(Environment):
 
                 advantages = self._get_advantages(gen_seqs)  # N*T
 
-                entropy = self._get_entropy(gen_log_probs, discount_rate=0.9)
+                entropy_g = self._get_entropy(gen_log_probs,
+                                              discount_rate=self.opts.discount)
                 g_score = gen_seq_log_probs * advantages
+                g_score = g_score.sum(1).mean()
 
-                loss_g = -g_score.sum(1).mean() - entropy * 1e-4
-                loss_g.backward(create_graph=self.opts.grad_reg)
+                loss_g = -g_score - entropy_g * self.opts.g_ent_reg
+                loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
 
@@ -289,14 +292,16 @@ class SynthEnvironment(Environment):
 
                 loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
                                                       has_init=False)
+                entropy_d = self._get_entropy(d_log_probs)
 
-                loss_d = loss_d - self._get_entropy(d_log_probs) * 0.001
-                loss_d.backward(create_graph=self.opts.grad_reg)
+                loss_d = loss_d - entropy_d * self.opts.d_ent_reg
+                loss_d.backward(create_graph=bool(self.opts.grad_reg))
 
             # self.tgt_g.load_state_dict(self.g.state_dict())
 
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
-            gnorm = gnormg * 50.0 + gnormd * 0.1
+            gnorm = (gnormg * (self.opts.grad_reg * 50.) +
+                     gnormd * (self.opts.grad_reg * 0.1))
             # nn.utils.clip_grad_norm(self.g.parameters(), 5)
             # nn.utils.clip_grad_norm(self.d.parameters(), 1)
             if self.opts.grad_reg:
@@ -310,4 +315,4 @@ class SynthEnvironment(Environment):
                 f'[{epoch}] nll: {test_nll:.3f}  '
                 f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
                 # f'gnorm: {gnorm.data[0]:.2f}  '
-                f'H: {entropy.data[0]:.2f}')
+                f'H: {entropy_g.data[0]:.2f}')
