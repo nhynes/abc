@@ -71,7 +71,6 @@ class RNNGenerator(nn.Module):
             if i == 0 and return_first_state:
                 th = torch.cuda if gen_toks.is_cuda else torch
                 first_state = (gen_state, th.get_rng_state())
-        # gen_seqs = torch.cat(gen_seqs, -1)
 
         if return_first_state:
             return gen_seqs, gen_log_probs, first_state
