@@ -249,15 +249,17 @@ class SynthEnvironment(Environment):
         half_batch = self.opts.batch_size // 2
         oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
 
-        self.tgt_g.load_state_dict(self.g.state_dict())
+        replay_buf = dataset.ReplayBuffer(10)
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             self.optim_g.zero_grad()
-            for _ in range(2):
+            for i in range(2):
                 # train G
                 gen_seqs, gen_log_probs = self.g.rollout(
                     self.init_toks, self.opts.seqlen)
                 gen_seqs = torch.cat(gen_seqs, -1)  # N*T
+                if i == 0:
+                    replay_buf.add_samples(gen_seqs)
 
                 gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
                 gen_seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
@@ -279,14 +281,11 @@ class SynthEnvironment(Environment):
             for i in range(1):
                 oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
 
-                if i == 0 and not self.opts.grad_reg:
-                    # just stepped g; generate new seqs
-                    gen_seqs, gen_probs = self.g.rollout(
-                        self.init_toks[:half_batch], self.opts.seqlen)
-                    gen_seqs = torch.cat(gen_seqs, -1)  # T*N
-
-                batch_toks = torch.cat(
-                    (oracle_toks, gen_seqs[:half_batch].data))
+                batch_toks = torch.cat((
+                    oracle_toks,
+                    replay_buf.get_samples(half_batch // 2).cuda(),
+                    gen_seqs[:half_batch//2].data,
+                ))
                 self._labels[:half_batch] = LABEL_REAL
                 self._labels[half_batch:] = LABEL_GEN
 
