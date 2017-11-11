@@ -124,11 +124,13 @@ class SynthEnvironment(Environment):
         # assumes distributions are along the last dimension
         infos = log_probs.exp() * log_probs
         if discount_rate:
+            entropy_undiscounted = -infos.sum(-1).mean()
             sz = [log_probs.size(0)] + [1]*(log_probs.ndimension() - 1)
             discount = log_probs.data.new(*sz).fill_(1)
             discount[1:] *= discount_rate
             discount.cumprod(0, out=discount)
             infos = infos * Variable(discount)
+            return -infos.sum(-1).mean(), entropy_undiscounted
         return -infos.sum(-1).mean()
 
     def pretrain_g(self):
@@ -141,8 +143,7 @@ class SynthEnvironment(Environment):
             train_loss = entropy = 0
             for batch in dataloader:
                 loss, gen_log_probs = self._forward_g_pretrain(batch)
-                entropy += self._get_entropy(
-                    gen_log_probs, discount_rate=self.opts.discount).data[0]
+                entropy += self._get_entropy(gen_log_probs).data[0]
                 train_loss += loss.data[0]
 
                 self.optim_g.zero_grad()
@@ -247,9 +248,9 @@ class SynthEnvironment(Environment):
         self.optim_g.param_groups[0]['lr'] *= 0.1
 
         half_batch = self.opts.batch_size // 2
-        oracle_ds_it = self._ds_iter(self.oracle_dataset, half_batch)
+        oracle_ds_it = self._ds_iter(self.oracle_dataset, self.opts.batch_size)
 
-        replay_buf = dataset.ReplayBuffer(10)
+        replay_buf = dataset.ReplayBuffer(100)
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             self.optim_g.zero_grad()
@@ -262,41 +263,55 @@ class SynthEnvironment(Environment):
                     replay_buf.add_samples(gen_seqs)
 
                 gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
-                gen_seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
+                seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
 
                 advantages = self._get_advantages(gen_seqs)  # N*T
+                g_score = (seq_log_probs * advantages).sum(1).mean()
 
-                entropy_g = self._get_entropy(gen_log_probs,
-                                              discount_rate=self.opts.discount)
-                g_score = gen_seq_log_probs * advantages
-                g_score = g_score.sum(1).mean()
+                disc_entropy_g, entropy_g = self._get_entropy(
+                    gen_log_probs, discount_rate=self.opts.discount)
 
-                loss_g = -g_score - entropy_g * self.opts.g_ent_reg
+                loss_g = -g_score - disc_entropy_g * self.opts.g_ent_reg
                 loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
 
             # train D
             self.optim_d.zero_grad()
-            for i in range(1):
-                oracle_toks = next(oracle_ds_it)[0][:, 1:].cuda()
 
-                batch_toks = torch.cat((
-                    oracle_toks,
-                    replay_buf.get_samples(half_batch // 2).cuda(),
-                    gen_seqs[:half_batch//2].data,
-                ))
-                self._labels[:half_batch] = LABEL_REAL
-                self._labels[half_batch:] = LABEL_GEN
+            REAL_WEIGHT = 0.5
+            GEN_WEIGHT = (1 - REAL_WEIGHT)
+            RBUF_WEIGHT = 0.5
 
-                loss_d, d_log_probs = self._forward_d((batch_toks, self._labels),
-                                                      has_init=False)
-                entropy_d = self._get_entropy(d_log_probs)
+            oracle_toks = next(oracle_ds_it)[0].cuda()
+            labels = self._labels.clone().fill_(LABEL_REAL)
+            loss_d, d_log_probs = self._forward_d((oracle_toks, labels))
+            loss_d *= REAL_WEIGHT
+            entropy_d = REAL_WEIGHT * self._get_entropy(d_log_probs)
 
-                loss_d = loss_d - entropy_d * self.opts.d_ent_reg
-                loss_d.backward(create_graph=bool(self.opts.grad_reg))
+            n_rbuf_batches = min(epoch - 1, 4)
+            cur_weight = GEN_WEIGHT
+            if n_rbuf_batches:
+                cur_weight *= RBUF_WEIGHT
+                rbuf_batch_weight = GEN_WEIGHT * RBUF_WEIGHT / n_rbuf_batches
 
-            # self.tgt_g.load_state_dict(self.g.state_dict())
+            self._labels.fill_(LABEL_GEN)
+            loss_d_g, d_log_probs = self._forward_d(
+                (gen_seqs.data, self._labels), has_init=False)
+
+            loss_d += cur_weight * loss_d_g
+            entropy_d += cur_weight * self._get_entropy(d_log_probs)
+
+            for _ in range(n_rbuf_batches):
+                loss_d_g, d_log_probs = self._forward_d(
+                    (replay_buf.get_samples(self.opts.batch_size).cuda(),
+                     self._labels),
+                    has_init=False)
+                loss_d += rbuf_batch_weight * loss_d_g
+                entropy_d += rbuf_batch_weight * self._get_entropy(d_log_probs)
+
+            loss_d = loss_d - entropy_d * self.opts.d_ent_reg
+            loss_d.backward(create_graph=bool(self.opts.grad_reg))
 
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
             gnorm = (gnormg * (self.opts.grad_reg * 50.) +
