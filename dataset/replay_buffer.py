@@ -27,9 +27,6 @@ class ReplayBuffer(torch.utils.data.ConcatDataset):
         self.datasets.append(dataset)
         self.cummulative_sizes = self.cumsum(self.datasets)
 
-    def __getitem__(self, index):
-        return super(ReplayBuffer, self).__getitem__(index)
-
 
 def test_replay_buffer():
     """Tests the replay buffer."""

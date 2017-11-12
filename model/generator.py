@@ -9,6 +9,7 @@ from torch.autograd import Variable
 import environ
 from .bottles import BottledLinear
 
+
 TYPES = ('rnn', 'rrnn')
 RNN, RRNN = TYPES
 

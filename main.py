@@ -51,7 +51,7 @@ def main():
         with _phase(env, phase, opts) as phase_runner:
             if phase_runner:
                 logger.debug(f'# running phase: {phase}')
-                phase_runner()
+                phase_runner()  # pylint: disable=not-callable
 
 
 @contextmanager
@@ -74,7 +74,7 @@ def _phase(env, phase, opts):
         runner = env.train_adv
 
     logger = logging.getLogger()
-    def _add_file_handler(lvl, prefixes=[]):
+    def _add_file_handler(lvl, prefixes):
         log_path = os.path.join(phase_dir, '_'.join(prefixes + ['log.txt']))
         handler = logging.FileHandler(log_path, mode='w')
         handler.setLevel(lvl)
@@ -91,7 +91,7 @@ def _phase(env, phase, opts):
 
     torch.save(env.state, snap_file)
     for handler in file_handlers:
-        logger.removeHandler(file_handlers)
+        logger.removeHandler(handler)
 
 
 if __name__ == '__main__':

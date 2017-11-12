@@ -1,6 +1,5 @@
 """A class for training a SeqGAN model on synthetic data."""
 
-import itertools
 import logging
 import time
 
@@ -47,7 +46,7 @@ class SynthEnvironment(Environment):
 
     def __init__(self, opts):
         """Creates a SynthEnvironment."""
-        torch.nn._functions.rnn.force_unfused = opts.grad_reg
+        torch.nn._functions.rnn.force_unfused = opts.grad_reg  # pylint: disable=protected-access
 
         super(SynthEnvironment, self).__init__(opts)
 
@@ -140,7 +139,7 @@ class SynthEnvironment(Environment):
         dataloader = self._create_dataloader(self.oracle_dataset)
 
         oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())
-        logging.info(f'[0] nll: {self._compute_test_nll():.3f}  '
+        logging.info(f'[00] nll: {self._compute_test_nll():.3f}  '
                      f'#oracle: {oracle_checksum:.3f}')
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             train_loss = entropy = 0
@@ -173,7 +172,7 @@ class SynthEnvironment(Environment):
             train_loss = 0
             gnorm = 0
             for batch in dataloader:
-                loss, pred_log_probs = self._forward_d(batch)
+                loss, _ = self._forward_d(batch)
 
                 train_loss += loss.data[0]
 
@@ -249,80 +248,29 @@ class SynthEnvironment(Environment):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        self.optim_g.param_groups[0]['lr'] *= 0.1
+        self.optim_g.param_groups[0]['lr'] *= 0.01
 
         oracle_dataloader = iter(
             self._create_dataloader(self.oracle_dataset, cycle=True))
 
         replay_buffer, rbuf_loader = self._create_replay_buffer(100, LABEL_GEN)
-        rbuf_it = None
+        replay_buffer_iter = None
 
-        for epoch in range(1, self.opts.adv_train_iters+1):
+        for i in range(1, self.opts.adv_train_iters+1):
             tick = time.time()
 
+            loss_g, gen_seqs, entropy_g = self._train_adv_g(replay_buffer)
             self.optim_g.zero_grad()
-            for i in range(self.opts.adv_g_iters):
-                # train G
-                gen_seqs, gen_log_probs = self.g.rollout(
-                    self.init_toks, self.opts.seqlen,
-                    temperature=self.opts.temperature)
-                gen_seqs = torch.cat(gen_seqs, -1)  # N*T
-                if i == 0:
-                    replay_buffer.add_samples(gen_seqs)
-
-                gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
-                seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
-
-                advantages = self._get_advantages(gen_seqs)  # N*T
-                g_score = (seq_log_probs * advantages).sum(1).mean()
-
-                disc_entropy_g, entropy_g = self._get_entropy(
-                    gen_log_probs, discount_rate=self.opts.discount)
-
-                # _, roomtemp_lprobs = self.g.rollout(
-                #     self.init_toks, self.opts.seqlen, temperature=1)
-                # roomtemp_lprobs = torch.stack(roomtemp_lprobs)
-                # _, entropy_g = self._get_entropy(roomtemp_lprobs)
-
-                loss_g = -g_score - disc_entropy_g * self.opts.g_ent_reg
-                loss_g.backward(create_graph=bool(self.opts.grad_reg))
+            loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
 
-            if rbuf_it is None:
-                rbuf_it = iter(rbuf_loader)
+            if replay_buffer_iter is None:
+                replay_buffer_iter = iter(rbuf_loader)
 
-            # train D
+            loss_d = self._train_adv_d(gen_seqs, oracle_dataloader,
+                                       replay_buffer_iter)
             self.optim_d.zero_grad()
-
-            REAL_W = 0.5
-            GEN_W = (1 - REAL_W)
-            RBUF_W = 0.5
-
-            loss_d, d_log_probs = self._forward_d(next(oracle_dataloader))
-            loss_d *= REAL_W
-            entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
-
-            n_rbuf_batches = min(epoch - 1, 4)
-            cur_w = GEN_W
-            if n_rbuf_batches:
-                cur_w *= RBUF_W
-                rbuf_batch_w = GEN_W * RBUF_W / n_rbuf_batches
-
-            self._labels.fill_(LABEL_GEN)
-            loss_d_g, d_log_probs = self._forward_d(
-                (gen_seqs.data, self._labels), has_init=False)
-
-            loss_d += cur_w * loss_d_g
-            entropy_d += cur_w * self._get_entropy(d_log_probs)[0]
-
-            for _ in range(n_rbuf_batches):
-                loss_d_g, d_log_probs = self._forward_d(
-                    next(rbuf_it), has_init=False)
-                loss_d += rbuf_batch_w * loss_d_g
-                entropy_d += rbuf_batch_w * self._get_entropy(d_log_probs)[0]
-
-            loss_d = loss_d - entropy_d * self.opts.d_ent_reg
             loss_d.backward(create_graph=bool(self.opts.grad_reg))
 
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
@@ -338,8 +286,71 @@ class SynthEnvironment(Environment):
             acc_gen, acc_oracle = self._compute_test_acc()
             test_nll = self._compute_test_nll()
             logging.info(
-                f'[{epoch:03d}] nll: {test_nll:.3f}  '
+                f'[{i:03d}] nll: {test_nll:.3f}  '
                 f'acc: o={acc_oracle:.2f} g={acc_gen:.2f}  '
                 f'gnorm: g={gnormg.data[0]:.2f} d={gnormd.data[0]:.2f}  '
                 f'H: {entropy_g.data[0]:.2f}  '
                 f'({time.time() - tick:.1f})')
+
+    def _train_adv_g(self, replay_buffer):
+        losses = []
+        entropies = []
+        for i in range(self.opts.adv_g_iters):
+            # train G
+            gen_seqs, gen_log_probs = self.g.rollout(
+                self.init_toks, self.opts.seqlen,
+                temperature=self.opts.temperature)
+            gen_seqs = torch.cat(gen_seqs, -1)  # N*T
+            if i == 0:
+                replay_buffer.add_samples(gen_seqs)
+
+            gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
+            seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
+
+            advantages = self._get_advantages(gen_seqs)  # N*T
+            score = (seq_log_probs * advantages).sum(1).mean()
+
+            disc_entropy, entropy = self._get_entropy(
+                gen_log_probs, discount_rate=self.opts.discount)
+
+            # _, roomtemp_lprobs = self.g.rollout(
+            #     self.init_toks, self.opts.seqlen, temperature=1)
+            # roomtemp_lprobs = torch.stack(roomtemp_lprobs)
+            # _, entropy = self._get_entropy(roomtemp_lprobs)
+
+            entropies.append(entropy)
+            losses.append(-score - disc_entropy * self.opts.g_ent_reg)
+
+        loss = sum(losses)
+        avg_entropy = sum(entropies) / len(entropies)
+        return loss, gen_seqs, avg_entropy
+
+    def _train_adv_d(self, gen_seqs, oracle_dataloader, replay_buffer_iter):
+        REAL_W = 0.5
+        GEN_W = (1 - REAL_W)
+        RBUF_W = 0.5
+
+        loss_d, d_log_probs = self._forward_d(next(oracle_dataloader))
+        loss_d *= REAL_W
+        entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
+
+        n_rbuf_batches = min(len(replay_buffer_iter) // self.opts.batch_size, 4)
+        cur_w = GEN_W
+        if n_rbuf_batches:
+            cur_w *= RBUF_W
+            rbuf_batch_w = GEN_W * RBUF_W / n_rbuf_batches
+
+        self._labels.fill_(LABEL_GEN)
+        loss_d_g, d_log_probs = self._forward_d(
+            (gen_seqs.data, self._labels), has_init=False)
+
+        loss_d += cur_w * loss_d_g
+        entropy_d += cur_w * self._get_entropy(d_log_probs)[0]
+
+        for _ in range(n_rbuf_batches):
+            loss_d_g, d_log_probs = self._forward_d(
+                next(replay_buffer_iter), has_init=False)
+            loss_d += rbuf_batch_w * loss_d_g
+            entropy_d += rbuf_batch_w * self._get_entropy(d_log_probs)[0]
+
+        return loss_d - entropy_d * self.opts.d_ent_reg

@@ -44,6 +44,8 @@ class Highway(nn.Module):
 
 
 class Discriminator(nn.Module):
+    """A base class for Discriminators."""
+
     def __init__(self, vocab_size, word_emb_dim, **kwargs):
         super(Discriminator, self).__init__()
 
@@ -107,7 +109,7 @@ class CNNDiscriminator(Discriminator):
         for layer in self.cnn_layers:
             # layer_acts.append(layer(embs).max(-1)[0])
             layer_acts.append(layer(embs).mean(-1))
-        layers_acts = torch.cat(max_acts, -1)  # N*sum(num_filters)
+        layers_acts = torch.cat(layer_acts, -1)  # N*sum(num_filters)
 
         return self.logits(layers_acts)
 
@@ -121,7 +123,7 @@ class RNNDiscriminator(Discriminator):
 
         emb_dim = 64
         self.rnn = nn.LSTM(word_emb_dim, emb_dim, num_layers=2,
-                          bidirectional=True)
+                           bidirectional=True)
 
         self.logits = nn.Linear(emb_dim * 2, 2)
 

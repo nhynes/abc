@@ -4,6 +4,7 @@ import sys
 
 import torch.utils.data
 
+
 class InfiniteRandomSampler(torch.utils.data.sampler.RandomSampler):
     """A RandomSampler that cycles forever."""
     def __iter__(self):
@@ -17,9 +18,11 @@ class InfiniteRandomSampler(torch.utils.data.sampler.RandomSampler):
     def __len__(self):
         return sys.maxsize
 
+
 class ReplayBufferSampler(torch.utils.data.sampler.Sampler):
     """A Sampler that uniforly samples batches of indices forever."""
     def __init__(self, replay_buffer, batch_size):
+        super(ReplayBufferSampler, self).__init__(replay_buffer)
         self.replay_buffer = replay_buffer
         self.batch_size = batch_size
 
@@ -34,6 +37,7 @@ class ReplayBufferSampler(torch.utils.data.sampler.Sampler):
 
 
 def test_inf_rand_sampler():
+    """Tests the InfiniteRandomSampler."""
     import itertools
 
     sampler = InfiniteRandomSampler(torch.randn(4))
@@ -44,8 +48,7 @@ def test_inf_rand_sampler():
 
 
 def test_replay_buffer_sampler():
-    import itertools
-
+    """Tests the ReplayBufferSampler."""
     t = torch.randn(2)
 
     sampler_it = iter(ReplayBufferSampler(t, 4))

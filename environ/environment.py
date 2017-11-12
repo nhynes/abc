@@ -83,6 +83,7 @@ class Environment(object):
 
     @property
     def state(self):
+        """Returns a dict containing the state of this Environment."""
         return {item: getattr(self, item).state_dict()
                 for item in self._STATEFUL}
 
@@ -91,15 +92,15 @@ class Environment(object):
         for item_name, item_state in state.items():
             item = getattr(self, item_name, None)
             if item is None:
-                logging.warn(f'WARNING: missing {item_name}')
+                logging.warning(f'WARNING: missing {item_name}')
                 continue  # don't load missing modules/optimizers
             if (isinstance(item, torch.optim.Optimizer) and
-                not item_state['state']):
+                    not item_state['state']):
                 continue  # ignore unstepped optimizers
             try:
                 item.load_state_dict(item_state)
             except (RuntimeError, KeyError, ValueError):
-                logging.warn(f'WARNING: could not load state for {item_name}')
+                logging.warning(f'WARNING: could not load {item_name} state')
         self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
         self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
 

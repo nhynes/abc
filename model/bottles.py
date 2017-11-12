@@ -1,8 +1,12 @@
+"""Nd wrappers for modules that operate on the columns of a matrix."""
+
 import torch
 from torch import nn
 
 
 class Bottle(nn.Module):
+    """Allows a 2D module to process an Nd input."""
+
     def forward(self, inp):
         sz = inp.size()
         if len(sz) <= 2:
