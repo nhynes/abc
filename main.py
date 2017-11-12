@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--prefix')
+    parser.add_argument('--rerun', nargs='+', default=[], choices=PHASES)
     init_opts, remaining_opts = parser.parse_known_args()
 
     opts_file = os.path.join(RUN_DIR, OPTS_FILE)
@@ -71,7 +72,7 @@ def _phase(env, phase, opts):
     if os.path.isfile(prefix_snap_file):
         snap_file = prefix_snap_file
 
-    if os.path.isfile(snap_file):
+    if os.path.isfile(snap_file) and phase not in opts.rerun:
         env.state = torch.load(snap_file)
         yield None
         return
