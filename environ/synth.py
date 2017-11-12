@@ -250,7 +250,8 @@ class SynthEnvironment(Environment):
 
         self.optim_g.param_groups[0]['lr'] *= 0.1
 
-        oracle_ds_it = self._ds_iter(self.oracle_dataset, self.opts.batch_size)
+        oracle_dataloader = iter(
+            self._create_dataloader(self.oracle_dataset, cycle=True))
 
         replay_buf = dataset.ReplayBuffer(100)
 
@@ -293,9 +294,8 @@ class SynthEnvironment(Environment):
             GEN_W = (1 - REAL_W)
             RBUF_W = 0.5
 
-            oracle_toks = next(oracle_ds_it)[0].cuda()
             labels = self._labels.clone().fill_(LABEL_REAL)
-            loss_d, d_log_probs = self._forward_d((oracle_toks, labels))
+            loss_d, d_log_probs = self._forward_d(next(oracle_dataloader))
             loss_d *= REAL_W
             entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
 

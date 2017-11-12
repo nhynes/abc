@@ -8,6 +8,7 @@ from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import model
+from dataset import samplers, ReplayBuffer
 
 
 class Environment(object):
