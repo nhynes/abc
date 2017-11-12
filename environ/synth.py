@@ -2,6 +2,7 @@
 
 import itertools
 import logging
+import time
 
 import torch
 from torch import nn
@@ -254,6 +255,8 @@ class SynthEnvironment(Environment):
         replay_buf = dataset.ReplayBuffer(100)
 
         for epoch in range(1, self.opts.adv_train_iters+1):
+            tick = time.time()
+
             self.optim_g.zero_grad()
             for i in range(self.opts.adv_g_iters):
                 # train G
@@ -336,4 +339,5 @@ class SynthEnvironment(Environment):
                 f'[{epoch}] nll: {test_nll:.3f}  '
                 f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
                 # f'gnorm: {gnorm.data[0]:.2f}  '
-                f'H: {entropy_g.data[0]:.2f}')
+                f'H: {entropy_g.data[0]:.2f}  '
+                f'({time.time() - tick:.2f})')

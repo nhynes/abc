@@ -90,7 +90,8 @@ def _phase(env, phase, opts):
     yield runner
 
     torch.save(env.state, snap_file)
-    map(logger.removeHandler, file_handlers)
+    for handler in file_handlers:
+        logger.removeHandler(file_handlers)
 
 
 if __name__ == '__main__':

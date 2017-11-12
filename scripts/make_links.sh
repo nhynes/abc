@@ -1,5 +1,7 @@
 #!/bin/bash
 
+ln -Lrsf ../../dataset/samplers.py dataset
+ln -Lrsf ../../dataset/replay_buffer.py dataset
 ln -Lrsf ../../environ/environment.py environ
 ln -Lrsf ../../environ/synth.py environ
 ln -Lrsf ../../model/discriminator.py model

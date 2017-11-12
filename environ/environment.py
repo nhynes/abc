@@ -78,9 +78,6 @@ class Environment(object):
         parser.add_argument('--d-ent-reg', default=1e-2, type=float)
         parser.add_argument('--temperature', default=1.2, type=float)
 
-        # output
-        parser.add_argument('--dispfreq', default=10, type=int)
-
         return parser
 
     @property
