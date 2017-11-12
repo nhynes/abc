@@ -77,7 +77,7 @@ class Environment(object):
         parser.add_argument('--discount', default=0.95, type=float)
         parser.add_argument('--g-ent-reg', default=1e-3, type=float)
         parser.add_argument('--d-ent-reg', default=1e-2, type=float)
-        parser.add_argument('--temperature', default=1.2, type=float)
+        parser.add_argument('--temperature', default=1, type=float)
 
         return parser
 
@@ -144,7 +144,7 @@ class Environment(object):
             dl_opts['sampler'] = samplers.InfiniteRandomSampler(src_dataset)
         return torch.utils.data.DataLoader(src_dataset, **dl_opts)
 
-    def _create_replay_buffer(self, max_history, label=1):
+    def _create_replay_buffer(self, max_history, label):
         replay_buffer = ReplayBuffer(max_history, label)
         sampler = samplers.ReplayBufferSampler(replay_buffer,
                                                self.opts.batch_size)

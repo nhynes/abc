@@ -3,10 +3,11 @@ import itertools
 
 import torch
 from torch import nn
+from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import environ
-from .bottles import BottledLinear, BottledLogSoftmax
+from .bottles import BottledLinear
 
 TYPES = ('rnn', 'rrnn')
 RNN, RRNN = TYPES
@@ -37,7 +38,7 @@ class RNNGenerator(nn.Module):
         logits = self.word_dec(tok_embs)  # T*N*vocab_size
         if temperature != 1:
             logits /= temperature
-        tok_probs = BottledLogSoftmax()(logits)
+        tok_probs = nnf.log_softmax(logits, 2)
         return tok_probs, next_state
 
     def rollout(self, init_state, ro_steps, return_first_state=False,

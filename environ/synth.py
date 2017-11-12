@@ -34,7 +34,7 @@ class SynthEnvironment(Environment):
             vocab_size=5000,
             g_word_emb_dim=32,
             d_word_emb_dim=32,
-            pretrain_g_epochs=50,  # try 10 when using oracle w2v
+            pretrain_g_epochs=50,  # try 20 when using oracle w2v
             pretrain_d_epochs=10,
             adv_train_iters=750,
             gen_dim=32,
@@ -157,8 +157,9 @@ class SynthEnvironment(Environment):
 
             oracle_nll = self._compute_test_nll()
             logging.info(
-                f'[{epoch}] loss: {train_loss:.3f}  nll: {oracle_nll:.3f}  '
-                f'H: {entropy:.2f}')
+                f'[{epoch:02d}] loss: {train_loss:.3f}  nll: {oracle_nll:.3f}  '
+                f'H: {entropy:.2f}  '
+                f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}')
 
     def pretrain_d(self):
         """Pretrains D using pretrained G."""
@@ -185,7 +186,7 @@ class SynthEnvironment(Environment):
             gnorm /= len(dataloader)
 
             acc_gen, acc_oracle = self._compute_test_acc()
-            logging.info(f'[{epoch}] loss: {train_loss:.3f}  '
+            logging.info(f'[{epoch}:02d] loss: {train_loss:.3f}  '
                          f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
                          f'gnorm: {gnorm:.2f}')
 
@@ -253,8 +254,8 @@ class SynthEnvironment(Environment):
         oracle_dataloader = iter(
             self._create_dataloader(self.oracle_dataset, cycle=True))
 
-        replay_buffer, replay_buffer_loader = self._create_replay_buffer(100)
-        replay_buffer_it = None
+        replay_buffer, rbuf_loader = self._create_replay_buffer(100, LABEL_GEN)
+        rbuf_it = None
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             tick = time.time()
@@ -278,18 +279,18 @@ class SynthEnvironment(Environment):
                 disc_entropy_g, entropy_g = self._get_entropy(
                     gen_log_probs, discount_rate=self.opts.discount)
 
-                _, roomtemp_lprobs = self.g.rollout(
-                    self.init_toks, self.opts.seqlen, temperature=1)
-                roomtemp_lprobs = torch.stack(roomtemp_lprobs)
-                _, entropy_g = self._get_entropy(roomtemp_lprobs)
+                # _, roomtemp_lprobs = self.g.rollout(
+                #     self.init_toks, self.opts.seqlen, temperature=1)
+                # roomtemp_lprobs = torch.stack(roomtemp_lprobs)
+                # _, entropy_g = self._get_entropy(roomtemp_lprobs)
 
                 loss_g = -g_score - disc_entropy_g * self.opts.g_ent_reg
                 loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
 
-            if replay_buffer_it is None:
-                replay_buffer_it = iter(replay_buffer_loader)
+            if rbuf_it is None:
+                rbuf_it = iter(rbuf_loader)
 
             # train D
             self.optim_d.zero_grad()
@@ -298,7 +299,6 @@ class SynthEnvironment(Environment):
             GEN_W = (1 - REAL_W)
             RBUF_W = 0.5
 
-            labels = self._labels.clone().fill_(LABEL_REAL)
             loss_d, d_log_probs = self._forward_d(next(oracle_dataloader))
             loss_d *= REAL_W
             entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
@@ -318,7 +318,7 @@ class SynthEnvironment(Environment):
 
             for _ in range(n_rbuf_batches):
                 loss_d_g, d_log_probs = self._forward_d(
-                    next(replay_buffer_it), has_init=False)
+                    next(rbuf_it), has_init=False)
                 loss_d += rbuf_batch_w * loss_d_g
                 entropy_d += rbuf_batch_w * self._get_entropy(d_log_probs)[0]
 
@@ -338,8 +338,8 @@ class SynthEnvironment(Environment):
             acc_gen, acc_oracle = self._compute_test_acc()
             test_nll = self._compute_test_nll()
             logging.info(
-                f'[{epoch}] nll: {test_nll:.3f}  '
-                f'acc: oracle={acc_oracle:.2f} gen={acc_gen:.2f}  '
-                # f'gnorm: {gnorm.data[0]:.2f}  '
+                f'[{epoch:03d}] nll: {test_nll:.3f}  '
+                f'acc: o={acc_oracle:.2f} g={acc_gen:.2f}  '
+                f'gnorm: g={gnormg.data[0]:.2f} d={gnormd.data[0]:.2f}  '
                 f'H: {entropy_g.data[0]:.2f}  '
-                f'({time.time() - tick:.2f})')
+                f'({time.time() - tick:.1f})')

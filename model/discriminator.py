@@ -71,7 +71,7 @@ class Discriminator(nn.Module):
             toks = torch.cat(toks, -1)
         logits = self._forward(toks)
         fuzz = Variable(logits.data.new(logits.size()).normal_()) * self.stdev
-        return nnf.log_softmax(logits + fuzz)
+        return nnf.log_softmax(logits + fuzz, dim=1)
 
 
 

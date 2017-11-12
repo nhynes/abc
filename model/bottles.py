@@ -18,11 +18,3 @@ class BottledLinear(Bottle, nn.Linear):
 
 class BottledEmbedding(Bottle, nn.Embedding):
     pass
-
-
-class BottledSoftmax(Bottle, nn.Softmax):
-    pass
-
-
-class BottledLogSoftmax(Bottle, nn.LogSoftmax):
-    pass
