@@ -9,7 +9,8 @@ import logging
 import torch
 
 import common
-from common import PHASES, G_ML, D_ML, ADV, RUN_DIR
+from common import PHASES, G_ML, D_ML, ADV
+from common import RUN_DIR, STATE_FILE, OPTS_FILE, LOG_FILE
 import environ
 
 
@@ -20,10 +21,10 @@ def main():
     parser.add_argument('--env', choices=environ.ENVS, default=environ.SYNTH)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--log-prefix')
+    parser.add_argument('--prefix')
     init_opts, remaining_opts = parser.parse_known_args()
 
-    opts_file = os.path.join(RUN_DIR, 'opts.pkl')
+    opts_file = os.path.join(RUN_DIR, OPTS_FILE)
     if init_opts.resume:
         new_opts = environ.parse_env_opts(
             init_opts, remaining_opts, no_defaults=True)
@@ -60,7 +61,16 @@ def _phase(env, phase, opts):
     if not os.path.isdir(phase_dir):
         os.mkdir(phase_dir)
 
-    snap_file = os.path.join(phase_dir, 'state.pth')
+    prefixes = [opts.prefix]*bool(opts.prefix)
+    def _prefix(suffixes):
+        suffixes = suffixes if isinstance(suffixes, list) else [suffixes]
+        return '_'.join(prefixes + suffixes)
+
+    snap_file = os.path.join(phase_dir, STATE_FILE)
+    prefix_snap_file = os.path.join(phase_dir, _prefix(STATE_FILE))
+    if os.path.isfile(prefix_snap_file):
+        snap_file = prefix_snap_file
+
     if os.path.isfile(snap_file):
         env.state = torch.load(snap_file)
         yield None
@@ -74,17 +84,17 @@ def _phase(env, phase, opts):
         runner = env.train_adv
 
     logger = logging.getLogger()
-    def _add_file_handler(lvl, prefixes):
-        log_path = os.path.join(phase_dir, '_'.join(prefixes + ['log.txt']))
+    def _add_file_handler(lvl, log_prefix=None):
+        suffixes = [log_prefix]*bool(log_prefix) + [LOG_FILE]
+        log_path = os.path.join(phase_dir, _prefix(suffixes))
         handler = logging.FileHandler(log_path, mode='w')
         handler.setLevel(lvl)
         logger.addHandler(handler)
         return handler
 
-    log_prefixes = [opts.log_prefix]*bool(opts.log_prefix)
     file_handlers = [
-        _add_file_handler(logging.INFO, log_prefixes),
-        _add_file_handler(logging.DEBUG, log_prefixes + ['debug']),
+        _add_file_handler(logging.INFO),
+        _add_file_handler(logging.DEBUG, 'debug'),
     ]
 
     yield runner
