@@ -5,7 +5,9 @@ from contextlib import contextmanager
 
 
 RUN_DIR = 'run'
-OPTS_FILE = 'opts.txt'
+LOG_FILE = 'log.txt'
+OPTS_FILE = 'opts.pkl'
+STATE_FILE = 'state.pth'
 
 PHASES = ('g_ml', 'd_ml', 'adv')
 G_ML, D_ML, ADV = PHASES

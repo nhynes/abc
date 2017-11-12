@@ -25,7 +25,7 @@ class SynthEnvironment(Environment):
         parser.add_argument(
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
-        parser.add_argument('--grad-reg', default=0.75, type=float)
+        parser.add_argument('--grad-reg', default=0, type=float)
         parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
             num_gen_samps=100000,
@@ -142,6 +142,7 @@ class SynthEnvironment(Environment):
         logging.info(f'[00] nll: {self._compute_test_nll():.3f}  '
                      f'#oracle: {oracle_checksum:.3f}')
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
+            tick = time.time()
             train_loss = entropy = 0
             for batch in dataloader:
                 loss, gen_log_probs = self._forward_g_pretrain(batch)
@@ -158,12 +159,14 @@ class SynthEnvironment(Environment):
             logging.info(
                 f'[{epoch:02d}] loss: {train_loss:.3f}  nll: {oracle_nll:.3f}  '
                 f'H: {entropy:.2f}  '
-                f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}')
+                f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}  '
+                f'({time.time() - tick:.1f})')
 
     def pretrain_d(self):
         """Pretrains D using pretrained G."""
 
         for epoch in range(1, self.opts.pretrain_d_epochs+1):
+            tick = time.time()
             gen_dataset = self._create_dataset(self.g, LABEL_GEN,
                                                seed=self.opts.seed+epoch)
             dataloader = self._create_dataloader(torch.utils.data.ConcatDataset(
@@ -185,9 +188,10 @@ class SynthEnvironment(Environment):
             gnorm /= len(dataloader)
 
             acc_gen, acc_oracle = self._compute_test_acc()
-            logging.info(f'[{epoch}:02d] loss: {train_loss:.3f}  '
+            logging.info(f'[{epoch:02d}] loss: {train_loss:.3f}  '
                          f'acc: oracle={acc_oracle:.2f}  gen={acc_gen:.2f}  '
-                         f'gnorm: {gnorm:.2f}')
+                         f'gnorm: {gnorm:.2f}  '
+                         f'({time.time() - tick:.1f})')
 
     def _get_qs(self, g_ro, rep_gen_seqs):
         qs = Variable(torch.cuda.FloatTensor(
