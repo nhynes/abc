@@ -6,6 +6,7 @@ import re
 import torch
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 FG = r'(\d+\.\d+)'  # Float Group
@@ -98,3 +99,21 @@ def load_log(log_path):
     log_df = pd.DataFrame.from_dict(cols)
     log_df = log_df.set_index('iter').astype(float)
     return log_df
+
+
+def do_plot(get_data, logs, filt=None, baseline=None):
+    """Plots data from several logs.
+
+    Args:
+        get_data: a function (log_name, log_data) -> plot_data
+    """
+    for exp_name, log in logs.items():
+        if filt and (exp_name != baseline and not filt in exp_name):
+            continue
+        get_data(exp_name, log).plot(label=exp_name)
+    plt.legend()
+
+
+def plot_ts(col, *args, **kwargs):
+    """Plots a column from logs as a time series."""
+    do_plot(lambda name, log: log[col], *args, **kwargs)
