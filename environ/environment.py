@@ -135,12 +135,28 @@ class Environment(object):
         preds = probs.data.max(1)[1]
         return (preds == self._labels).float().mean()
 
-    def _create_dataloader(self, dataset):
+    def _create_dataloader(self, src_dataset, cycle=False):
         dl_opts = {'batch_size': self.opts.batch_size,
                    'num_workers': self.opts.nworkers,
                    'pin_memory': True,
-                   'shuffle': True}
-        return torch.utils.data.DataLoader(dataset, **dl_opts)
+                   'shuffle': not cycle}
+        if cycle:
+            dl_opts['sampler'] = samplers.InfiniteRandomSampler(src_dataset)
+        return torch.utils.data.DataLoader(src_dataset, **dl_opts)
+
+    def _create_replay_buffer(self, max_history, label=1):
+        import multiprocessing
+        mgr = multiprocessing.Manager()
+        datasets = mgr.list([[] * max_history])
+
+        replay_buffer = ReplayBuffer(datasets, label)
+        sampler = samplers.ReplayBufferSampler(replay_buffer,
+                                               self.opts.batch_size)
+        loader = torch.utils.data.DataLoader(replay_buffer,
+                                             batch_sampler=sampler,
+                                             num_workers=4,
+                                             pin_memory=True)
+        return replay_buffer, loader
 
     def _forward_g_pretrain(self, batch, volatile=False):
         toks, _ = batch

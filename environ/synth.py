@@ -253,7 +253,8 @@ class SynthEnvironment(Environment):
         oracle_dataloader = iter(
             self._create_dataloader(self.oracle_dataset, cycle=True))
 
-        replay_buf = dataset.ReplayBuffer(100)
+        replay_buffer, replay_buffer_loader = self._create_replay_buffer(100)
+        replay_buffer_it = None
 
         for epoch in range(1, self.opts.adv_train_iters+1):
             tick = time.time()
@@ -266,7 +267,7 @@ class SynthEnvironment(Environment):
                     temperature=self.opts.temperature)
                 gen_seqs = torch.cat(gen_seqs, -1)  # N*T
                 if i == 0:
-                    replay_buf.add_samples(gen_seqs)
+                    replay_buffer.add_samples(gen_seqs)
 
                 gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
                 seq_log_probs = self._gather_act_probs(gen_seqs, gen_log_probs)
@@ -277,15 +278,18 @@ class SynthEnvironment(Environment):
                 disc_entropy_g, entropy_g = self._get_entropy(
                     gen_log_probs, discount_rate=self.opts.discount)
 
-                # _, roomtemp_lprobs = self.g.rollout(
-                #     self.init_toks, self.opts.seqlen, temperature=1)
-                # roomtemp_lprobs = torch.stack(roomtemp_lprobs)
-                # _, entropy_g = self._get_entropy(roomtemp_lprobs)
+                _, roomtemp_lprobs = self.g.rollout(
+                    self.init_toks, self.opts.seqlen, temperature=1)
+                roomtemp_lprobs = torch.stack(roomtemp_lprobs)
+                _, entropy_g = self._get_entropy(roomtemp_lprobs)
 
                 loss_g = -g_score - disc_entropy_g * self.opts.g_ent_reg
                 loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
+
+            if replay_buffer_it is None:
+                replay_buffer_it = iter(replay_buffer_loader)
 
             # train D
             self.optim_d.zero_grad()
@@ -314,9 +318,7 @@ class SynthEnvironment(Environment):
 
             for _ in range(n_rbuf_batches):
                 loss_d_g, d_log_probs = self._forward_d(
-                    (replay_buf.get_samples(self.opts.batch_size).cuda(),
-                     self._labels),
-                    has_init=False)
+                    next(replay_buffer_it), has_init=False)
                 loss_d += rbuf_batch_w * loss_d_g
                 entropy_d += rbuf_batch_w * self._get_entropy(d_log_probs)[0]
 
