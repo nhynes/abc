@@ -25,7 +25,7 @@ class QAEnvironment(Environment):
             vocab_size=20000,
             g_word_emb_dim=64,
             d_word_emb_dim=64,
-            gen_dim=512,
+            rnn_dim=512,
             num_gen_layers=2,
             lr_g=0.001,
             lr_d=0.001,

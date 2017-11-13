@@ -9,7 +9,7 @@ import logging
 import torch
 
 import common
-from common import PHASES, G_ML, D_ML, ADV
+from common import PHASES, HASHER, G_ML, D_ML, ADV
 from common import RUN_DIR, STATE_FILE, OPTS_FILE, LOG_FILE
 import environ
 
@@ -48,6 +48,8 @@ def main():
     env = environ.create(opts.env, opts)
 
     for phase in PHASES:
+        if phase == HASHER and not opts.exploration_bonus:
+            continue
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase, opts) as phase_runner:
@@ -77,7 +79,9 @@ def _phase(env, phase, opts):
         yield None
         return
 
-    if phase == G_ML:
+    if phase == HASHER:
+        runner = env.train_hasher
+    elif phase == G_ML:
         runner = env.pretrain_g
     elif phase == D_ML:
         runner = env.pretrain_d

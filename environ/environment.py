@@ -23,10 +23,15 @@ class Environment(object):
 
         self.g = model.generator.create(**vars(opts)).cuda()
         self.d = model.discriminator.create(**vars(opts)).cuda()
-        self.tgt_g = model.generator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
+
+        if self.opts.exploration_bonus:
+            self.hasher = model.hasher.create(**vars(self.opts)).cuda()
+            self.optim_hasher = torch.optim.Adam(self.hasher.parameters(),
+                                                 lr=self.opts.lr_hasher)
+            self.state_counts = torch.LongTensor(2**self.opts.code_dim).zero_()
 
         num_inits = max(opts.num_rollouts, 1) * opts.batch_size
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
@@ -65,12 +70,16 @@ class Environment(object):
         parser.add_argument('--filter-widths',
                             default=list(range(1, 11)) + [15, 20],
                             nargs='+', type=int)
+        parser.add_argument('--exploration-bonus', action='store_true')
+        parser.add_argument('--code-dim', default=32, type=int)
 
         # training
         parser.add_argument('--lr-g', type=float)
         parser.add_argument('--lr-d', type=float)
+        parser.add_argument('--lr-hasher', type=float)
         parser.add_argument('--pretrain-g-epochs', type=int)
         parser.add_argument('--pretrain-d-epochs', type=int)
+        parser.add_argument('--train-hasher-epochs', type=int)
         parser.add_argument('--adv-train-iters', type=int)
         parser.add_argument('--adv-g-iters', default=2, type=int)
         parser.add_argument('--num-rollouts', default=8, type=int)
@@ -103,6 +112,10 @@ class Environment(object):
                 logging.warning(f'WARNING: could not load {item_name} state')
         self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
         self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
+
+    def train_hasher(self):
+        """Train a model that produces binary codes for LSH."""
+        raise NotImplementedError()
 
     def pretrain_g(self):
         """Pretrains G on a to-be-implemented dataset."""
@@ -155,15 +168,22 @@ class Environment(object):
                                              pin_memory=True)
         return replay_buffer, loader
 
-    def _forward_g_pretrain(self, batch, volatile=False):
+    def _forward_seq2seq(self, fwd_fn, batch, volatile=False):
         toks, _ = batch
         toks = Variable(
             toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
         flat_tgts = toks[:, 1:].t().contiguous().view(-1)
 
-        gen_log_probs, _ = self.g(toks[:, :-1])
+        gen_log_probs = fwd_fn(toks[:, :-1])
         flat_gen_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))
-        return nnf.nll_loss(flat_gen_log_probs, flat_tgts), gen_log_probs
+        loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts)
+        return loss, gen_log_probs
+
+    def _forward_hasher_train(self, batch):
+        return self._forward_seq2seq(self.hasher, batch)[0]
+
+    def _forward_g_pretrain(self, batch):
+        return self._forward_seq2seq(lambda toks: self.g(toks)[0], batch)
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
@@ -182,3 +202,17 @@ class Environment(object):
         probs: T*N*V
         """
         return probs.transpose(0, 1).gather(-1, acts.unsqueeze(-1)).squeeze(-1)
+
+    @staticmethod
+    def _get_entropy(log_probs, discount_rate=None):
+        # assumes distributions are along the last dimension
+        infos = log_probs.exp() * log_probs
+        entropy = entropy_undiscounted = -infos.sum(-1).mean()
+        if discount_rate and discount_rate != 1:
+            sz = [log_probs.size(0)] + [1]*(log_probs.ndimension() - 1)
+            discount = log_probs.data.new(*sz).fill_(1)
+            discount[1:] *= discount_rate
+            discount.cumprod(0, out=discount)
+            infos = infos * Variable(discount)
+            entropy = -infos.sum(-1).mean()
+        return entropy, entropy_undiscounted

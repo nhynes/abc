@@ -35,12 +35,14 @@ class SynthEnvironment(Environment):
             d_word_emb_dim=32,
             pretrain_g_epochs=50,  # try 20 when using oracle w2v
             pretrain_d_epochs=10,
+            train_hasher_epochs=10,
             adv_train_iters=750,
-            gen_dim=32,
+            rnn_dim=32,
             dropout=0.25,
             num_gen_layers=1,
             lr_g=0.01,
             lr_d=0.001,
+            lr_hasher=0.01,
             )
         return parser
 
@@ -54,9 +56,12 @@ class SynthEnvironment(Environment):
 
         self.oracle = self._create_oracle().cuda()
         self.oracle_dataset = self._create_dataset(self.oracle, LABEL_REAL)
+        self.oracle_test_set = self._create_dataset(
+            self.oracle, LABEL_REAL,
+            num_samples=len(self.ro_init_toks)*5, seed=-1)
 
         if self.opts.use_oracle_w2v:
-            for net in (self.g, self.d, self.tgt_g):
+            for net in (self.g, self.d):
                 net.word_emb = model.utils.DontTrain(self.oracle.word_emb)
 
         with common.rand_state(torch.cuda, -1):
@@ -119,19 +124,27 @@ class SynthEnvironment(Environment):
         acc_oracle /= num_test_batches
         return acc_gen, acc_oracle
 
-    @staticmethod
-    def _get_entropy(log_probs, discount_rate=None):
-        # assumes distributions are along the last dimension
-        infos = log_probs.exp() * log_probs
-        entropy = entropy_undiscounted = -infos.sum(-1).mean()
-        if discount_rate and discount_rate != 1:
-            sz = [log_probs.size(0)] + [1]*(log_probs.ndimension() - 1)
-            discount = log_probs.data.new(*sz).fill_(1)
-            discount[1:] *= discount_rate
-            discount.cumprod(0, out=discount)
-            infos = infos * Variable(discount)
-            entropy = -infos.sum(-1).mean()
-        return entropy, entropy_undiscounted
+    def train_hasher(self):
+        """Train an auto-encoder on the dataset for use in hashing."""
+        dataloader = self._create_dataloader(self.oracle_dataset)
+        self.hasher.train()
+        for epoch in range(1, self.opts.train_hasher_epochs + 1):
+            tick = time.time()
+            train_loss = 0
+            for batch in dataloader:
+                loss = self._forward_hasher_train(batch)
+                train_loss += loss.data[0]
+
+                self.optim_hasher.zero_grad()
+                loss.backward()
+                self.optim_hasher.step()
+            train_loss /= len(dataloader)
+
+            test_loss = self._compute_hasher_test_err()
+            logging.info(
+                f'[{epoch:02d}]  '
+                f'loss: train={train_loss:.3f} test={test_loss:.3f}  '
+                f'({time.time() - tick:.1f})')
 
     def pretrain_g(self):
         """Pretrains G using maximum-likelihood on a synthetic dataset."""
@@ -253,6 +266,8 @@ class SynthEnvironment(Environment):
         """Adversarially train G against D."""
 
         self.optim_g.param_groups[0]['lr'] *= 0.01
+        if self.opts.exploration_bonus:
+            self.hasher.eval()
 
         oracle_dataloader = iter(
             self._create_dataloader(self.oracle_dataset, cycle=True))
@@ -313,6 +328,8 @@ class SynthEnvironment(Environment):
 
             advantages = self._get_advantages(gen_seqs)  # N*T
             score = (seq_log_probs * advantages).sum(1).mean()
+            if self.opts.exploration_bonus:
+                score = score + self._get_exploration_bonus(gen_seqs)
 
             disc_entropy, entropy = self._get_entropy(
                 gen_log_probs, discount_rate=self.opts.discount)

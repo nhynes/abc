@@ -17,7 +17,7 @@ RNN, RRNN = TYPES
 class RNNGenerator(nn.Module):
     """An RNN token generator."""
 
-    def __init__(self, vocab_size, word_emb_dim, gen_dim, num_layers,
+    def __init__(self, vocab_size, word_emb_dim, rnn_dim, num_layers,
                  rrnn=False, **kwargs):
         super(RNNGenerator, self).__init__()
 
@@ -26,9 +26,9 @@ class RNNGenerator(nn.Module):
                                      padding_idx=padding_idx)
 
         if rrnn:
-            gen_dim *= 10
-        self.gen = nn.LSTM(word_emb_dim, gen_dim, num_layers=num_layers)
-        self.word_dec = BottledLinear(gen_dim, vocab_size)
+            rnn_dim *= 10
+        self.gen = nn.LSTM(word_emb_dim, rnn_dim, num_layers=num_layers)
+        self.word_dec = BottledLinear(rnn_dim, vocab_size)
 
     def forward(self, toks, prev_state=None, temperature=1, **unused_kwargs):
         """
@@ -106,7 +106,7 @@ def test_rnn_generator():
     seqlen = 4
     vocab_size = 32
     word_emb_dim = 8
-    gen_dim = 12
+    rnn_dim = 12
     num_layers = 1
     rrnn = True
     debug = True

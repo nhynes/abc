@@ -9,8 +9,8 @@ LOG_FILE = 'log.txt'
 OPTS_FILE = 'opts.pkl'
 STATE_FILE = 'state.pth'
 
-PHASES = ('g_ml', 'd_ml', 'adv')
-G_ML, D_ML, ADV = PHASES
+PHASES = ('hasher', 'g_ml', 'd_ml', 'adv')
+HASHER, G_ML, D_ML, ADV = PHASES
 LABEL_GEN, LABEL_REAL = 0, 1
 
 EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
