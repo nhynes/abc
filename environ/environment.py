@@ -57,9 +57,9 @@ class Environment(object):
         parser.add_argument('--d-type', choices=model.discriminator.TYPES,
                             default=model.discriminator.RNN)
         parser.add_argument('--vocab-size', type=int)
-        parser.add_argument('--g-word-emb-dim', type=int)
-        parser.add_argument('--d-word-emb-dim', type=int)
-        parser.add_argument('--gen-dim', type=int)
+        parser.add_argument('--g-tok-emb-dim', type=int)
+        parser.add_argument('--d-tok-emb-dim', type=int)
+        parser.add_argument('--rnn-dim', type=int)
         parser.add_argument('--num-gen-layers', default=1, type=int)
         parser.add_argument('--dropout', type=float)
         parser.add_argument('--seqlen', type=int)
@@ -146,8 +146,8 @@ class Environment(object):
     def compute_acc(self, probs, label):
         """Computes the accuracy given prob Variable and and label."""
         self._labels.fill_(label)
-        preds = probs.data.max(1)[1]
-        return (preds == self._labels).float().mean()
+        probs = probs.data if isinstance(probs, Variable) else probs
+        return (probs.max(1)[1] == self._labels).float().mean()
 
     def _create_dataloader(self, src_dataset, cycle=False):
         dl_opts = {'batch_size': self.opts.batch_size,

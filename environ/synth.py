@@ -31,11 +31,11 @@ class SynthEnvironment(Environment):
             num_gen_samps=100000,
             seqlen=20,
             vocab_size=5000,
-            g_word_emb_dim=32,
-            d_word_emb_dim=32,
+            g_tok_emb_dim=32,
+            d_tok_emb_dim=32,
             pretrain_g_epochs=50,  # try 20 when using oracle w2v
             pretrain_d_epochs=10,
-            train_hasher_epochs=10,
+            train_hasher_epochs=17,
             adv_train_iters=750,
             rnn_dim=32,
             dropout=0.25,
@@ -55,6 +55,9 @@ class SynthEnvironment(Environment):
         self.ro_init_toks.data.zero_()
 
         self.oracle = self._create_oracle().cuda()
+        oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())
+        logging.debug(f'#oracle: {oracle_checksum:.3f}')
+
         self.oracle_dataset = self._create_dataset(self.oracle, LABEL_REAL)
         self.oracle_test_set = self._create_dataset(
             self.oracle, LABEL_REAL,
@@ -62,11 +65,7 @@ class SynthEnvironment(Environment):
 
         if self.opts.use_oracle_w2v:
             for net in (self.g, self.d):
-                net.word_emb = model.utils.DontTrain(self.oracle.word_emb)
-
-        with common.rand_state(torch.cuda, -1):
-            self.oracle_test_toks, _ = self.oracle.rollout(self.init_toks,
-                                                           self.opts.seqlen)
+                net.tok_emb = model.utils.DontTrain(self.oracle.tok_emb)
 
     def _create_oracle(self):
         """Returns a randomly initialized generator."""
@@ -151,9 +150,7 @@ class SynthEnvironment(Environment):
 
         dataloader = self._create_dataloader(self.oracle_dataset)
 
-        oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())
-        logging.info(f'[00] nll: {self._compute_test_nll():.3f}  '
-                     f'#oracle: {oracle_checksum:.3f}')
+        logging.info(f'[00] nll: {self._compute_test_nll():.3f}')
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             tick = time.time()
             train_loss = entropy = 0

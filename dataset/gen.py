@@ -50,7 +50,7 @@ def test_dataset():
     seed = 42
 
     generator = model.generator.RNNGenerator(
-        vocab_size=50, word_emb_dim=32, rnn_dim=16, num_layers=1)
+        vocab_size=50, tok_emb_dim=32, rnn_dim=16, num_layers=1)
     gen_init_toks = Variable(torch.LongTensor(batch_size, 1).fill_(1))
 
     ds = GenDataset(**locals())

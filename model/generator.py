@@ -17,26 +17,26 @@ RNN, RRNN = TYPES
 class RNNGenerator(nn.Module):
     """An RNN token generator."""
 
-    def __init__(self, vocab_size, word_emb_dim, rnn_dim, num_layers,
+    def __init__(self, vocab_size, tok_emb_dim, rnn_dim, num_layers,
                  rrnn=False, **kwargs):
         super(RNNGenerator, self).__init__()
 
         padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
-        self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
+        self.tok_emb = nn.Embedding(vocab_size, tok_emb_dim,
                                      padding_idx=padding_idx)
 
         if rrnn:
             rnn_dim *= 10
-        self.gen = nn.LSTM(word_emb_dim, rnn_dim, num_layers=num_layers)
-        self.word_dec = BottledLinear(rnn_dim, vocab_size)
+        self.gen = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=num_layers)
+        self.tok_dec = BottledLinear(rnn_dim, vocab_size)
 
     def forward(self, toks, prev_state=None, temperature=1, **unused_kwargs):
         """
         toks: N*T
         """
-        wembs = self.word_emb(toks).transpose(0, 1) # T*N*d_wemb
+        wembs = self.tok_emb(toks).transpose(0, 1) # T*N*d_wemb
         tok_embs, next_state = self.gen(wembs, prev_state)
-        logits = self.word_dec(tok_embs)  # T*N*vocab_size
+        logits = self.tok_dec(tok_embs)  # T*N*vocab_size
         if temperature != 1:
             logits /= temperature
         tok_probs = nnf.log_softmax(logits, 2)
@@ -87,12 +87,12 @@ class RNNGenerator(nn.Module):
             return super(RNNGenerator, self).parameters()
         return itertools.chain(*[
             m.parameters() for m in self.children()
-            if m != self.word_emb])
+            if m != self.tok_emb])
 
 
-def create(g_word_emb_dim, num_gen_layers, gen_type=RNN, **opts):
+def create(g_tok_emb_dim, num_gen_layers, gen_type=RNN, **opts):
     """Creates a token generator."""
-    return RNNGenerator(word_emb_dim=g_word_emb_dim,
+    return RNNGenerator(tok_emb_dim=g_tok_emb_dim,
                         num_layers=num_gen_layers,
                         rrnn=(gen_type == RRNN), **opts)
 
@@ -105,7 +105,7 @@ def test_rnn_generator():
     batch_size = 4
     seqlen = 4
     vocab_size = 32
-    word_emb_dim = 8
+    tok_emb_dim = 8
     rnn_dim = 12
     num_layers = 1
     rrnn = True

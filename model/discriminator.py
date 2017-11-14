@@ -46,11 +46,11 @@ class Highway(nn.Module):
 class Discriminator(nn.Module):
     """A base class for Discriminators."""
 
-    def __init__(self, vocab_size, word_emb_dim, **kwargs):
+    def __init__(self, vocab_size, tok_emb_dim, **kwargs):
         super(Discriminator, self).__init__()
 
         padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
-        self.word_emb = nn.Embedding(vocab_size, word_emb_dim,
+        self.tok_emb = nn.Embedding(vocab_size, tok_emb_dim,
                                      padding_idx=padding_idx)
 
         self.stdev = nn.Parameter(torch.randn(1) * 0.1)
@@ -63,7 +63,7 @@ class Discriminator(nn.Module):
         if not dx2:
             return super(Discriminator, self).parameters()
         return itertools.chain(*[
-            m.parameters() for m in self.children() if m != self.word_emb])
+            m.parameters() for m in self.children() if m != self.tok_emb])
 
     def forward(self, toks):
         """
@@ -80,17 +80,17 @@ class Discriminator(nn.Module):
 class CNNDiscriminator(Discriminator):
     """A CNN token discriminator."""
 
-    def __init__(self, word_emb_dim, filter_widths, num_filters, dropout,
+    def __init__(self, tok_emb_dim, filter_widths, num_filters, dropout,
                  **kwargs):
         super(CNNDiscriminator, self).__init__(
-            word_emb_dim=word_emb_dim, **kwargs)
+            tok_emb_dim=tok_emb_dim, **kwargs)
 
         assert len(filter_widths) == len(num_filters)
 
         cnn_layers = []
         for kw, c in zip(filter_widths, num_filters):
             cnn_layers.append(nn.Sequential(
-                nn.Conv1d(word_emb_dim, c, kw),
+                nn.Conv1d(tok_emb_dim, c, kw),
                 nn.ReLU(True),
             ))
         self.cnn_layers = nn.ModuleList(cnn_layers)
@@ -103,7 +103,7 @@ class CNNDiscriminator(Discriminator):
 
     def _forward(self, toks):
         """ toks: N*T """
-        embs = self.word_emb(toks).transpose(1, 2)  # N*d_wemb*T
+        embs = self.tok_emb(toks).transpose(1, 2)  # N*d_wemb*T
 
         layer_acts = []  # num_layers*[N*c]
         for layer in self.cnn_layers:
@@ -117,12 +117,12 @@ class CNNDiscriminator(Discriminator):
 class RNNDiscriminator(Discriminator):
     """An RNN token discriminator."""
 
-    def __init__(self, word_emb_dim, **kwargs):
-        super(RNNDiscriminator, self).__init__(word_emb_dim=word_emb_dim,
+    def __init__(self, tok_emb_dim, **kwargs):
+        super(RNNDiscriminator, self).__init__(tok_emb_dim=tok_emb_dim,
                                                **kwargs)
 
         emb_dim = 64
-        self.rnn = nn.LSTM(word_emb_dim, emb_dim, num_layers=2,
+        self.rnn = nn.LSTM(tok_emb_dim, emb_dim, num_layers=2,
                            bidirectional=True)
 
         self.logits = nn.Linear(emb_dim * 2, 2)
@@ -131,15 +131,15 @@ class RNNDiscriminator(Discriminator):
         """
         toks: N*T
         """
-        word_embs = self.word_emb(toks).transpose(0, 1)  # T*N*d_wemb
-        seq_embs, _ = self.rnn(word_embs)
+        tok_embs = self.tok_emb(toks).transpose(0, 1)  # T*N*d_wemb
+        seq_embs, _ = self.rnn(tok_embs)
         return self.logits(seq_embs[-1])
 
 
-def create(d_type, d_word_emb_dim, **opts):
+def create(d_type, d_tok_emb_dim, **opts):
     """Creates a token discriminator."""
     d_cls = RNNDiscriminator if d_type == RNN else CNNDiscriminator
-    return d_cls(word_emb_dim=d_word_emb_dim, **opts)
+    return d_cls(tok_emb_dim=d_tok_emb_dim, **opts)
 
 
 def test_cnn_discriminator():
@@ -147,7 +147,7 @@ def test_cnn_discriminator():
     # pylint: disable=unused-variable
     batch_size = 3
     vocab_size = 32
-    word_emb_dim = 10
+    tok_emb_dim = 10
     filter_widths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
     num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
     dropout = 0.25
@@ -169,7 +169,7 @@ def test_rnn_discriminator():
     # pylint: disable=unused-variable
     batch_size = 3
     vocab_size = 32
-    word_emb_dim = 10
+    tok_emb_dim = 10
     debug = True
 
     d = RNNDiscriminator(**locals())
