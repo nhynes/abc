@@ -1,13 +1,13 @@
-from .qa import QAEnvironment
+from .real import NLEnvironment
 from .synth import SynthEnvironment
 
-ENVS = ('qa', 'synth')
-QA, SYNTH = ENVS
+ENVS = ('real', 'synth')
+Real, SYNTH = ENVS
 
 def _get_env(env):
     if env == SYNTH:
         return SynthEnvironment
-    return QAEnvironment
+    return NLEnvironment
 
 def create(env, opts):
     """Creates the Environment appropriate for the given opts."""

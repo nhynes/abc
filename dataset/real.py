@@ -1,4 +1,4 @@
-"""A Dataset that loads the Amazon product QA."""
+"""A Dataset that loads a natural language corpus."""
 
 import os
 
@@ -9,11 +9,11 @@ from common import EXTRA_VOCAB, UNK, BOS, EOS
 import common
 
 
-class QADataset(torch.utils.data.Dataset):
+class NLDataset(torch.utils.data.Dataset):
     """Loads the data."""
 
     def __init__(self, data_dir, vocab_size, seqlen, part, **unused_kwargs):
-        super(QADataset, self).__init__()
+        super(NLDataset, self).__init__()
 
         self.seqlen = seqlen
         self.part = part
@@ -45,12 +45,12 @@ class QADataset(torch.utils.data.Dataset):
 
 
 def create(*args, **kwargs):
-    """Returns a QADataset."""
-    return QADataset(*args, **kwargs)
+    """Returns a NLDataset."""
+    return NLDataset(*args, **kwargs)
 
 
 def test_dataset():
-    """Tests the QADataset."""
+    """Tests the NLDataset."""
 
     # pylint: disable=unused-variable
     data_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'qa')
@@ -59,7 +59,7 @@ def test_dataset():
     seqlen = 21
     debug = True
 
-    ds = QADataset(**locals())
+    ds = NLDataset(**locals())
     toks, labels = ds[0]
     print(toks)
     print(ds.decode(toks))

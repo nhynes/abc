@@ -1,4 +1,4 @@
-"""An Environment for use with the QA dataset."""
+"""An Environment for use with a natural language dataset."""
 
 import os
 import logging
@@ -11,20 +11,20 @@ import common
 import dataset
 from .environment import Environment
 
-class QAEnvironment(Environment):
-    """Functions for training a model on the QA dataset."""
+class NLEnvironment(Environment):
+    """Functions for training a model on the NL dataset."""
 
     @classmethod
     def get_opt_parser(cls):
         """Returns an `ArgumentParser` that parses env-specific opts."""
-        parser = super(QAEnvironment, cls).get_opt_parser()
+        parser = super(NLEnvironment, cls).get_opt_parser()
         parser.add_argument(
             '--data-dir', default='data/qa', type=os.path.abspath)
         parser.set_defaults(
             seqlen=22,
             vocab_size=20000,
-            g_word_emb_dim=64,
-            d_word_emb_dim=64,
+            g_tok_emb_dim=64,
+            d_tok_emb_dim=64,
             rnn_dim=512,
             num_gen_layers=2,
             lr_g=0.001,
@@ -33,16 +33,16 @@ class QAEnvironment(Environment):
         return parser
 
     def __init__(self, opts):
-        """Creates a QAEnvironment."""
-        super(QAEnvironment, self).__init__(opts)
+        """Creates a NLEnvironment."""
+        super(NLEnvironment, self).__init__(opts)
 
-        self.train_dataset = dataset.QADataset(part='train', **vars(opts))
-        self.val_dataset = dataset.QADataset(part='val', **vars(opts))
+        self.train_dataset = dataset.NLDataset(part='train', **vars(opts))
+        self.val_dataset = dataset.NLDataset(part='val', **vars(opts))
 
         self.ro_init_toks.data.fill_(self.train_dataset.vocab[common.BOS])
 
     def pretrain_g(self):
-        """Pretrains G using maximum-likelihood on the QA dataset."""
+        """Pretrains G using maximum-likelihood on the NL dataset."""
 
         logger = logging.getLogger()
 
