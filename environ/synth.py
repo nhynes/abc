@@ -38,6 +38,8 @@ class SynthEnvironment(Environment):
             train_hasher_epochs=17,
             adv_train_iters=750,
             rnn_dim=32,
+            oracle_dim=384,
+            code_len=128,
             dropout=0.25,
             num_gen_layers=1,
             lr_g=0.01,
@@ -65,13 +67,18 @@ class SynthEnvironment(Environment):
 
         if self.opts.use_oracle_w2v:
             for net in (self.g, self.d):
-                net.tok_emb = model.utils.DontTrain(self.oracle.tok_emb)
+                net.tok_emb = model.utils.Apply(self.oracle.tok_emb,
+                                                detach=True)
 
     def _create_oracle(self):
         """Returns a randomly initialized generator."""
         with common.rand_state(torch, self.opts.seed):
+            opt_vars = vars(self.opts)
+            opt_vars.pop('rnn_dim')
             oracle = model.generator.create(
-                gen_type=self.opts.oracle_type, **vars(self.opts))
+                gen_type=self.opts.oracle_type,
+                rnn_dim=self.opts.oracle_dim,
+                **opt_vars)
             for param in oracle.parameters():
                 nn.init.normal(param, std=1)
         return oracle
@@ -111,17 +118,33 @@ class SynthEnvironment(Environment):
         return test_nll
 
     def _compute_test_acc(self, num_samples=256):
-        acc_gen = acc_oracle = 0
         num_test_batches = max(num_samples // len(self.init_toks), 1)
+
+        oracle_test_loader = self._create_dataloader(self.oracle_test_set)
+        acc_oracle = 0
+        for i, batch in enumerate(oracle_test_loader):
+            if i == num_test_batches:
+                break
+            oracle_test_toks = Variable(
+                next(test_loader)[0][:, 1:].cuda())  # slice off init toks
+            acc_oracle += self.compute_acc(self.d(oracle_test_toks), LABEL_REAL)
+        acc_oracle /= i
+
+        acc_gen = 0
         with common.rand_state(torch.cuda, -1):
             for _ in range(num_test_batches):
                 gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
                 acc_gen += self.compute_acc(self.d(gen_seqs), LABEL_GEN)
-                acc_oracle += self.compute_acc(
-                    self.d(self.oracle_test_toks), LABEL_REAL)
         acc_gen /= num_test_batches
-        acc_oracle /= num_test_batches
+
         return acc_gen, acc_oracle
+
+    def _compute_hasher_test_err(self):
+        test_loader = self._create_dataloader(self.oracle_test_set)
+        err = 0
+        for batch in test_loader:
+            err += self._forward_hasher_train(batch, volatile=True).data[0]
+        return err / len(test_loader)
 
     def train_hasher(self):
         """Train an auto-encoder on the dataset for use in hashing."""

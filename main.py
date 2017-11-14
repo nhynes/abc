@@ -50,6 +50,8 @@ def main():
     for phase in PHASES:
         if phase == HASHER and not opts.exploration_bonus:
             continue
+        if phase != HASHER:
+            exit()  # DEBUG
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase, opts) as phase_runner:

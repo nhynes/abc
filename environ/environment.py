@@ -14,7 +14,7 @@ from dataset import samplers, ReplayBuffer
 class Environment(object):
     """A base class for training a SeqGAN model."""
 
-    _STATEFUL = ('g', 'd', 'optim_g', 'optim_d')
+    _STATEFUL = ('hasher', 'g', 'd', 'optim_g', 'optim_d')
 
     def __init__(self, opts):
         """Creates an Environment."""
@@ -27,11 +27,11 @@ class Environment(object):
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
 
-        if self.opts.exploration_bonus:
-            self.hasher = model.hasher.create(**vars(self.opts)).cuda()
+        if opts.exploration_bonus:
+            self.hasher = model.hasher.create(**vars(opts)).cuda()
             self.optim_hasher = torch.optim.Adam(self.hasher.parameters(),
-                                                 lr=self.opts.lr_hasher)
-            self.state_counts = torch.LongTensor(2**self.opts.code_dim).zero_()
+                                                 lr=opts.lr_hasher)
+            self.state_counts = torch.zeros(2**opts.code_len)
 
         num_inits = max(opts.num_rollouts, 1) * opts.batch_size
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
@@ -71,7 +71,7 @@ class Environment(object):
                             default=list(range(1, 11)) + [15, 20],
                             nargs='+', type=int)
         parser.add_argument('--exploration-bonus', action='store_true')
-        parser.add_argument('--code-dim', default=32, type=int)
+        parser.add_argument('--code-len', type=int)
 
         # training
         parser.add_argument('--lr-g', type=float)
@@ -169,21 +169,23 @@ class Environment(object):
         return replay_buffer, loader
 
     def _forward_seq2seq(self, fwd_fn, batch, volatile=False):
-        toks, _ = batch
-        toks = Variable(
-            toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
+        """
+        batch: (toks, labels); assumes toks is N*(seqlen + 1) with init toks
+        """
+        toks = Variable(batch[0], volatile=volatile).cuda()
         flat_tgts = toks[:, 1:].t().contiguous().view(-1)
 
-        gen_log_probs = fwd_fn(toks[:, :-1])
+        gen_log_probs = fwd_fn(toks)
         flat_gen_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))
         loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts)
         return loss, gen_log_probs
 
-    def _forward_hasher_train(self, batch):
-        return self._forward_seq2seq(self.hasher, batch)[0]
+    def _forward_hasher_train(self, batch, volatile=False):
+        return self._forward_seq2seq(self.hasher, batch, volatile=volatile)[0]
 
-    def _forward_g_pretrain(self, batch):
-        return self._forward_seq2seq(lambda toks: self.g(toks)[0], batch)
+    def _forward_g_pretrain(self, batch, volatile=False):
+        return self._forward_seq2seq(lambda toks: self.g(toks[:, :-1])[0],
+                                     batch, volatile=volatile)
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch

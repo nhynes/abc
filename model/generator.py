@@ -10,23 +10,20 @@ import environ
 from .bottles import BottledLinear
 
 
-TYPES = ('rnn', 'rrnn')
-RNN, RRNN = TYPES
+TYPES = ('rnn',)
+RNN, = TYPES
 
 
 class RNNGenerator(nn.Module):
     """An RNN token generator."""
 
-    def __init__(self, vocab_size, tok_emb_dim, rnn_dim, num_layers,
-                 rrnn=False, **kwargs):
+    def __init__(self, vocab_size, tok_emb_dim, rnn_dim, num_layers, **kwargs):
         super(RNNGenerator, self).__init__()
 
         padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
         self.tok_emb = nn.Embedding(vocab_size, tok_emb_dim,
                                      padding_idx=padding_idx)
 
-        if rrnn:
-            rnn_dim *= 10
         self.gen = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=num_layers)
         self.tok_dec = BottledLinear(rnn_dim, vocab_size)
 
@@ -94,7 +91,7 @@ def create(g_tok_emb_dim, num_gen_layers, gen_type=RNN, **opts):
     """Creates a token generator."""
     return RNNGenerator(tok_emb_dim=g_tok_emb_dim,
                         num_layers=num_gen_layers,
-                        rrnn=(gen_type == RRNN), **opts)
+                        *opts)
 
 
 def test_rnn_generator():
@@ -108,7 +105,6 @@ def test_rnn_generator():
     tok_emb_dim = 8
     rnn_dim = 12
     num_layers = 1
-    rrnn = True
     debug = True
 
     gen = RNNGenerator(**locals())

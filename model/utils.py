@@ -2,15 +2,17 @@ import torch
 from torch import nn
 
 
-class DontTrain(nn.Module):
-    """Wraps a module to detach its output."""
+class Apply(nn.Module):
+    """A Module that wraps a function."""
+    def __init__(self, fn):
+        super(Apply, self).__init__()
+        self.fn = fn
 
-    def __init__(self, mod):
-        super(DontTrain, self).__init__()
-        self.mod = mod
-
-    def forward(self, *args, **kwargs):
-        return self.mod(*args, **kwargs).detach()
+    def forward(self, input, detach=False):
+        output = self.fn(input)
+        if detach:
+            output = output.detach()
+        return output
 
 
 def load_w2v_file(w2v_file):
