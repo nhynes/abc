@@ -19,6 +19,7 @@ class Environment(object):
     def __init__(self, opts):
         """Creates an Environment."""
 
+        opts.num_hash_buckets = opts.num_hash_buckets or 2**opts.code_len
         self.opts = opts
 
         self.g = model.generator.create(**vars(opts)).cuda()
@@ -31,7 +32,7 @@ class Environment(object):
             self.hasher = model.hasher.create(**vars(opts)).cuda()
             self.optim_hasher = torch.optim.Adam(self.hasher.parameters(),
                                                  lr=opts.lr_hasher)
-            self.state_counts = torch.zeros(2**opts.code_len)
+            self.state_counts = torch.zeros(opts.num_hash_buckets)
 
         num_inits = max(opts.num_rollouts, 1) * opts.batch_size
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
@@ -72,6 +73,9 @@ class Environment(object):
                             nargs='+', type=int)
         parser.add_argument('--exploration-bonus', action='store_true')
         parser.add_argument('--code-len', type=int)
+        parser.add_argument('--num-hash-buckets',
+                            type=lambda x: 2**int(
+                                torch.np.round(torch.np.log2(float(x)))))
 
         # training
         parser.add_argument('--lr-g', type=float)
@@ -86,6 +90,7 @@ class Environment(object):
         parser.add_argument('--discount', default=0.95, type=float)
         parser.add_argument('--g-ent-reg', default=1e-3, type=float)
         parser.add_argument('--d-ent-reg', default=1e-2, type=float)
+        parser.add_argument('--hasher-ent-reg', default=1e-2, type=float)
         parser.add_argument('--temperature', default=1, type=float)
 
         return parser
@@ -175,13 +180,16 @@ class Environment(object):
         toks = Variable(batch[0], volatile=volatile).cuda()
         flat_tgts = toks[:, 1:].t().contiguous().view(-1)
 
-        gen_log_probs = fwd_fn(toks)
+        output = fwd_fn(toks)
+        if not isinstance(output, (list, tuple)):
+            output = (output,)
+        gen_log_probs = output[0]
         flat_gen_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))
         loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts)
-        return loss, gen_log_probs
+        return (loss, *output)
 
     def _forward_hasher_train(self, batch, volatile=False):
-        return self._forward_seq2seq(self.hasher, batch, volatile=volatile)[0]
+        return self._forward_seq2seq(self.hasher, batch, volatile=volatile)
 
     def _forward_g_pretrain(self, batch, volatile=False):
         return self._forward_seq2seq(lambda toks: self.g(toks[:, :-1])[0],

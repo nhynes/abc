@@ -6,7 +6,7 @@ from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import environ
-from .bottles import BottledLinear
+from .bottles import BottledLinear, bottle
 from .utils import Apply
 
 
@@ -31,16 +31,12 @@ class _RNNEncoder(nn.Module):
         tok_embs: T*N*tok_emb_dim
         """
         seq_embs, _ = self.enc(tok_embs)
-        precodes = self.precoder(seq_embs[-1])  # N*code_len_x2
-        # maybe self-attention, max-over-time, etc. would work better?
+        code_embs = self.precoder(seq_embs[-1]).view(-1, self.code_len, 2)
+        logits = nnf.log_softmax(code_embs, dim=2)
 
-        precodes = precodes.view(-1, 2)
-        flat_codes = nnf.gumbel_softmax(precodes, hard=True)[:, 0].contiguous()
-        # flat_codes = precodes.max(1)[1].float()  # doesn't train very well!
-        # flat_codes = (flat_codes * 2) - 1  # {0, 1} -> {-1, 1}
-        # flat_codes = nnf.tanh(precodes)
-
-        return flat_codes.view(-1, self.code_len)
+        codes = bottle(nnf.gumbel_softmax, logits, hard=False)[:, :, 0]
+        # codes = precodes.max(-1)[1].float()  # doesn't train very well!
+        return codes.contiguous(), logits
 
 
 class _RNNDecoder(nn.Module):
@@ -51,7 +47,7 @@ class _RNNDecoder(nn.Module):
         super(_RNNDecoder, self).__init__()
 
         self.seqlen = seqlen
-        self.emb_dim = code_len #+ tok_emb_dim
+        self.emb_dim = code_len  #+ tok_emb_dim
 
         self.dec = nn.LSTM(self.emb_dim, rnn_dim, bidirectional=True)
         self.tok_dec = BottledLinear(rnn_dim*2, vocab_size)
@@ -65,8 +61,7 @@ class _RNNDecoder(nn.Module):
 
         rep_codes = codes[None].expand(self.seqlen, *codes.size())
         # tok_codes = torch.cat((tok_embs[:-1], rep_codes), dim=-1)
-        tok_codes = rep_codes
-        tok_embs, _ = self.dec(tok_codes)
+        tok_embs, _ = self.dec(rep_codes)  # forwarding tok_codes ignores codes
         tok_logits = self.tok_dec(tok_embs)
         return nnf.log_softmax(tok_logits, dim=2)
 
@@ -74,7 +69,7 @@ class _RNNDecoder(nn.Module):
 class AEHasher(nn.Module):
     """An autoencoder-based hasher."""
 
-    def __init__(self, code_len, num_hash_buckets, **kwargs):
+    def __init__(self, code_len, num_hash_buckets=None, **kwargs):
         super(AEHasher, self).__init__()
 
         tok_emb_dim = kwargs['tok_emb_dim']
@@ -86,12 +81,15 @@ class AEHasher(nn.Module):
         self.encoder = _RNNEncoder(code_len, **kwargs)
         self.decoder = _RNNDecoder(code_len, **kwargs)
 
+        num_hash_buckets = num_hash_buckets or 2**code_len
         hash_code_len = int(torch.np.ceil(torch.np.log2(num_hash_buckets)))
-        self.proj = nn.Sequential()
+        self.proj = Apply(torch.round)
         if hash_code_len != code_len:
             self.proj = nn.Sequential(
+                Apply(lambda x: x * 2 - 1),  # {0, 1} -> {-1, 1}
                 nn.Linear(code_len, hash_code_len, bias=False),
-                Apply(torch.sign))
+                Apply(torch.sign),
+                nn.ReLU(True))
 
     def forward(self, toks, **unused_kwargs):
         """
@@ -102,9 +100,9 @@ class AEHasher(nn.Module):
             toks: N*T; no init toks
         """
         tok_embs = self.tok_emb(toks).transpose(0, 1)
-        codes = self.encoder(tok_embs[self.training:])
+        codes, code_logits = self.encoder(tok_embs[self.training:])
         if self.training:
-            return self.decoder(tok_embs, codes)
+            return self.decoder(tok_embs, codes), code_logits
         return self.proj(codes).detach()
 
 
@@ -132,14 +130,15 @@ def test_ae_hasher():
 
     hasher = AEHasher(**locals())
 
-    toks = Variable(torch.LongTensor(batch_size, seqlen).random_(vocab_size))
+    toks = Variable(torch.LongTensor(batch_size, seqlen+1).random_(vocab_size))
 
     hasher.train()
-    tok_log_probs = hasher(toks)
-    assert tok_log_probs.size(1) == seqlen
-    assert tok_log_probs.size(2) == vocab_size
+    tok_log_probs, code_logits = hasher(toks)
+    assert tok_log_probs.size()[1:] == (seqlen, vocab_size)
+    assert code_logits.size()[1:] == (code_len, 2)
+    assert torch.np.allclose(code_logits.data.exp().sum(-1).numpy(), 1)
 
     hasher.eval()
     hash_code = hasher(toks)
     assert hash_code.size(1) == torch.np.log2(num_hash_buckets)
-    assert (hash_code.sign() == hash_code).all()
+    assert (nnf.relu(hash_code) == hash_code).all()

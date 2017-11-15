@@ -91,7 +91,7 @@ def create(g_tok_emb_dim, num_gen_layers, gen_type=RNN, **opts):
     """Creates a token generator."""
     return RNNGenerator(tok_emb_dim=g_tok_emb_dim,
                         num_layers=num_gen_layers,
-                        *opts)
+                        **opts)
 
 
 def test_rnn_generator():

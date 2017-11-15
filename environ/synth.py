@@ -26,6 +26,7 @@ class SynthEnvironment(Environment):
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
         parser.add_argument('--grad-reg', default=0, type=float)
+        parser.add_argument('--oracle-dim', default=128, type=int)
         parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
             num_gen_samps=100000,
@@ -35,16 +36,15 @@ class SynthEnvironment(Environment):
             d_tok_emb_dim=32,
             pretrain_g_epochs=50,  # try 20 when using oracle w2v
             pretrain_d_epochs=10,
-            train_hasher_epochs=17,
+            train_hasher_epochs=25,
             adv_train_iters=750,
             rnn_dim=32,
-            oracle_dim=384,
-            code_len=128,
+            code_len=6,
             dropout=0.25,
             num_gen_layers=1,
             lr_g=0.01,
             lr_d=0.001,
-            lr_hasher=0.01,
+            lr_hasher=0.002,
             )
         return parser
 
@@ -139,12 +139,10 @@ class SynthEnvironment(Environment):
 
         return acc_gen, acc_oracle
 
-    def _compute_hasher_test_err(self):
+    def _compute_hasher_test_loss(self):
         test_loader = self._create_dataloader(self.oracle_test_set)
-        err = 0
-        for batch in test_loader:
-            err += self._forward_hasher_train(batch, volatile=True).data[0]
-        return err / len(test_loader)
+        return sum(self._forward_hasher_train(batch, volatile=True)[0].data[0]
+                   for batch in test_loader) / len(test_loader)
 
     def train_hasher(self):
         """Train an auto-encoder on the dataset for use in hashing."""
@@ -152,20 +150,26 @@ class SynthEnvironment(Environment):
         self.hasher.train()
         for epoch in range(1, self.opts.train_hasher_epochs + 1):
             tick = time.time()
-            train_loss = 0
+            train_loss = train_entropy = 0
             for batch in dataloader:
-                loss = self._forward_hasher_train(batch)
+                loss, _, code_logits = self._forward_hasher_train(batch)
                 train_loss += loss.data[0]
+
+                entropy = self._get_entropy(code_logits)[0]
+                loss -= entropy * self.opts.hasher_ent_reg
+                train_entropy += entropy.data[0]
 
                 self.optim_hasher.zero_grad()
                 loss.backward()
                 self.optim_hasher.step()
             train_loss /= len(dataloader)
+            train_entropy /= len(dataloader)
 
-            test_loss = self._compute_hasher_test_err()
+            test_loss = self._compute_hasher_test_loss()
             logging.info(
                 f'[{epoch:02d}]  '
                 f'loss: train={train_loss:.3f} test={test_loss:.3f}  '
+                f'H: {train_entropy:.3f}  '
                 f'({time.time() - tick:.1f})')
 
     def pretrain_g(self):
