@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 
 FG = r'(\d+\.\d+)'  # Float Group
 LOG_RES = {
+    'loss': {
+        'expr': rf'loss: train={FG} test={FG}',
+        'groups': ['train', 'test'],
+    },
     'iter': r'\[(\d+)]',
     'nll': rf'nll: {FG}',
     'acc': {
