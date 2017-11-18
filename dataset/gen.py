@@ -9,8 +9,8 @@ import common
 class GenDataset(torch.utils.data.Dataset):
     """Loads data from a generative model."""
 
-    def __init__(self, generator, label, gen_init_toks,
-                 seqlen, num_samples, seed, **unused_kwargs):
+    def __init__(self, generator, label, seqlen, num_samples,
+                 gen_init_toks, seed, eos_idx=None, **unused_kwargs):
         super(GenDataset, self).__init__()
 
         self.label = label
@@ -23,9 +23,19 @@ class GenDataset(torch.utils.data.Dataset):
             samples = []
             for _ in range(num_batches):
                 gen_seqs, _ = generator.rollout(gen_init_toks, seqlen)
-                samples.append(init_toks)
-                samples.extend(map(lambda x: x.data.cpu(), gen_seqs))
-            self.samples = torch.cat(samples, -1).view(-1, seqlen + 1)
+                samps = torch.cat([gen_init_toks] + gen_seqs, -1).data
+                if eos_idx:
+                    # 1. create a mask of ones up until the first eos token
+                    mask = (samps != eos_idx).cumprod(-1)
+                    # 2. create a mask for the first the eos token
+                    # this method requires that the init tok exists
+                    eos_pos = (samps == eos_idx)[:, 1:] * mask[:, :-1]
+                    # 3. zero out everything including+after the first eos tok
+                    samps.masked_fill_(1 - mask, 0)
+                    # 4. put back the eos tok
+                    samps[:, 1:].masked_fill_(eos_pos, eos_idx)
+                samples.append(samps.cpu())
+            self.samples = torch.cat(samples)
 
     def __getitem__(self, index):
         label = self.label
@@ -67,3 +77,43 @@ def test_dataset():
     batch_toks, batch_labels = ds[torch.randperm(batch_size)]
     assert len(batch_toks) == batch_size
     assert len(batch_labels) == batch_size
+
+def test_dataset_mask():
+    """Tests the Dataset."""
+    import model
+
+    # pylint: disable=unused-variable
+    vocab_size = 50
+    batch_size = 5
+    label = 0
+    num_samples = batch_size
+    seqlen = 21
+    seed = 42
+    eos_idx = 2
+
+    gen_samps = torch.LongTensor([
+        [1, 1, 2, 1, 2, 1],
+        [1, 1, 1, 2, 1, 1],
+        [2, 1, 1, 2, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 2],
+    ])
+
+    expected_samps = torch.LongTensor([
+        [-1, 1, 1, 2, 0, 0, 0],
+        [-1, 1, 1, 1, 2, 0, 0],
+        [-1, 2, 0, 0, 0, 0, 0],
+        [-1, 1, 1, 1, 1, 1, 1],
+        [-1, 1, 1, 1, 1, 1, 2],
+    ])
+
+    class MockGenerator(object):
+        @staticmethod
+        def rollout(*args, **kwargs):
+            return list(Variable(gen_samps).split(1, dim=1)), None
+
+    generator = MockGenerator()
+    gen_init_toks = Variable(torch.LongTensor(batch_size, 1).fill_(-1))
+
+    ds = GenDataset(**locals())
+    assert (ds.samples == expected_samps).all()

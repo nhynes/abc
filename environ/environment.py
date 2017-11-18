@@ -454,7 +454,8 @@ class Environment(object):
                                   seqlen=self.opts.seqlen,
                                   seed=seed,
                                   gen_init_toks=self.ro_init_toks,
-                                  num_samples=num_samples)
+                                  num_samples=num_samples,
+                                  eos_idx=self.opts.eos_idx)
 
     def _create_dataloader(self, src_dataset, cycle=False):
         dl_opts = {'batch_size': self.opts.batch_size,

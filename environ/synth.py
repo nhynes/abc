@@ -52,7 +52,7 @@ class SynthEnvironment(Environment):
         super(SynthEnvironment, self).__init__(opts)
 
         self.ro_init_toks.data.zero_()
-        self.opts.padding_idx = None
+        self.opts.padding_idx = self.opts.eos_idx = None
 
         self.oracle = self._create_oracle().cuda()
         oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())

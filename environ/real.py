@@ -50,6 +50,7 @@ class NLEnvironment(Environment):
 
         self.ro_init_toks.data.fill_(self.train_dataset.vocab[common.BOS])
         self.opts.padding_idx = self.train_dataset.vocab[common.PAD]
+        self.opts.eos_idx = self.train_dataset.vocab[common.EOS]
 
     def _compute_eval_metric(self):
         test_loader = self._create_dataloader(self.test_dataset)
