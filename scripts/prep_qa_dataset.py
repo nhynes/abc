@@ -4,6 +4,7 @@ from collections import Counter
 import argparse
 import os
 import random
+import re
 import sys
 import pickle
 
@@ -17,7 +18,7 @@ sys.path.append(PROJ_ROOT)
 import common
 
 DATA_DIR = os.path.join(PROJ_ROOT, 'data')
-CACHE_DIR = os.path.join(DATA_DIR, '_cache')
+CACHE_DIR = os.path.join(DATA_DIR, '_cache', 'qa')
 OUT_DIR = os.path.join(DATA_DIR, 'qa')
 QS_PATH = os.path.join(DATA_DIR, 'FullOct2007.xml.part{}.gz')
 
@@ -51,17 +52,25 @@ def _load():
 
 
 def _tokenize(qs):
-    nlp = spacy.load('en')
+    nlp = spacy.load('en', disable=['ner'])
     qtoks = []
-    for q in nlp.tokenizer.pipe(tqdm(qs, desc='tokenize', leave=False)):
-        if not q:
-            continue
-        qtoks.append([tok.text for tok in q])
+    for q in nlp.pipe(tqdm(qs, desc='tokenize', leave=False)):
+        for sent in q.sents:
+            sent_toks = [tok.text for tok in sent if not tok.is_space]
+            if sent_toks:
+                qtoks.append(sent_toks)
     return qtoks
 
 
 def _filter(qs):
-    return [' '.join(q) for q in qs if q[0] in QUESTION_WORDS]
+    good_qs = []
+    for q in qs:
+        if not q[0] in QUESTION_WORDS or q[-1] != '?':
+            continue
+        qcat = ' '.join(q)
+        qcat = re.sub('( [?!.]+)+ \?$', ' ?', qcat)
+        good_qs.append(qcat)
+    return good_qs
 
 
 def _run_pipeline(pipeline, cache_dir):
@@ -87,7 +96,7 @@ def main():
 
     for d in (CACHE_DIR, OUT_DIR):
         if not os.path.isdir(d):
-            os.mkdir(d)
+            os.makedirs(d)
 
     qs = _run_pipeline([_load, _tokenize, _filter], CACHE_DIR)
 

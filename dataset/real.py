@@ -22,26 +22,39 @@ class NLDataset(torch.utils.data.Dataset):
                       .add_extra_vocab(EXTRA_VOCAB)
                       .truncate(vocab_size).set_unk_tok(UNK))
 
-        self.qs = common.unpickle(os.path.join(data_dir, part + '.pkl'))
+        qs = common.unpickle(os.path.join(data_dir, part + '.pkl'))
+        self.qtoks = []
+        for q in qs:
+            qtoks = q.split(' ')
+            if len(qtoks) >= self.seqlen:
+                continue
+            pct_unk = sum(qtok not in self.vocab.w2i
+                          for qtok in qtoks) / len(qtoks)
+            if pct_unk > 0.1:
+                continue
+            self.qtoks.append(qtoks)
 
     def __getitem__(self, index):
-        q = self.qs[index]
-        toks = q.split(' ')[:self.seqlen-1]
-
+        toks = self.qtoks[index]
         qtoks = torch.LongTensor(self.seqlen + 1).zero_()
         qtoks[0] = self.vocab[BOS]
         for i, tok in enumerate(toks, 1):
             qtoks[i] = self.vocab[tok]
-        qtoks[len(toks)] = self.vocab[EOS]
+        qtoks[len(toks)] = self.vocab[EOS]  # replaces final punct with </s>
 
         return qtoks, 1
 
     def __len__(self):
-        return len(self.qs)
+        return len(self.qtoks)
 
     def decode(self, toks_vec):
         """Turns a vector of token indices into a string."""
-        return ' '.join([self.vocab[idx] for idx in toks_vec if idx > 0])
+        toks = []
+        for idx in toks_vec:
+            toks.append(self.vocab[idx])
+            if idx == 0 or idx == self.vocab[EOS]:
+                break
+        return ' '.join(toks)
 
 
 def create(*args, **kwargs):
@@ -60,10 +73,11 @@ def test_dataset():
     debug = True
 
     ds = NLDataset(**locals())
-    toks, labels = ds[0]
+    rp = torch.randperm(len(ds))
+    toks, labels = ds[rp[0]]
     print(toks)
     print(ds.decode(toks))
 
-    for i in torch.randperm(len(ds)):
+    for i in rp:
         toks, labels = ds[i]
         assert (toks >= 0).all() and (toks < vocab_size).all()
