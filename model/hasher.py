@@ -17,7 +17,8 @@ AE, = TYPES
 class _RNNEncoder(nn.Module):
     """Encodes tokens to binary codes."""
 
-    def __init__(self, code_len, tok_emb_dim, rnn_dim, num_layers, **kwargs):
+    def __init__(self, code_len, tok_emb_dim, rnn_dim, num_layers,
+                 **unused_kwargs):
         super(_RNNEncoder, self).__init__()
 
         self.code_len = code_len
@@ -69,7 +70,8 @@ class _RNNDecoder(nn.Module):
 class AEHasher(nn.Module):
     """An autoencoder-based hasher."""
 
-    def __init__(self, code_len, num_hash_buckets=None, **kwargs):
+    def __init__(self, code_len, num_hash_buckets=None,
+                 padding_idx=None, **kwargs):
         super(AEHasher, self).__init__()
 
         tok_emb_dim = kwargs['tok_emb_dim']

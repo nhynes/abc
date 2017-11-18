@@ -25,9 +25,9 @@ class SynthEnvironment(Environment):
             '--oracle-type', default=model.generator.RNN,
             choices=model.generator.TYPES)
         parser.add_argument('--oracle-dim', default=128, type=int)
+        parser.add_argument('--num-gen-samps', default=100000, type=int)
         parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
-            num_gen_samps=100000,
             seqlen=20,
             vocab_size=5000,
             g_tok_emb_dim=32,
@@ -40,6 +40,7 @@ class SynthEnvironment(Environment):
             code_len=6,
             dropout=0.25,
             num_gen_layers=1,
+            batch_size=64,
             lr_g=0.01,
             lr_d=0.001,
             lr_hasher=0.002,
@@ -51,6 +52,7 @@ class SynthEnvironment(Environment):
         super(SynthEnvironment, self).__init__(opts)
 
         self.ro_init_toks.data.zero_()
+        self.opts.padding_idx = None
 
         self.oracle = self._create_oracle().cuda()
         oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())

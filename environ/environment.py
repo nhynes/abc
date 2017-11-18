@@ -63,7 +63,6 @@ class Environment(object):
         parser.add_argument('--debug', action='store_true')
 
         # data
-        parser.add_argument('--num-gen-samps', default=10000, type=int)
         parser.add_argument('--nworkers', default=4, type=int)
 
         # model
@@ -76,7 +75,7 @@ class Environment(object):
         parser.add_argument('--num-gen-layers', default=1, type=int)
         parser.add_argument('--dropout', type=float)
         parser.add_argument('--seqlen', type=int)
-        parser.add_argument('--batch-size', default=64, type=int)
+        parser.add_argument('--batch-size', type=int)
         parser.add_argument('--num-filters',
                             default=[100] + [200]*4 + [100]*5 + [160]*2,
                             nargs='+', type=int)
@@ -139,6 +138,8 @@ class Environment(object):
     def _forward_seq2seq(self, fwd_fn, batch, volatile=False):
         """
         batch: (toks, labels); assumes toks is N*(seqlen + 1) with init toks
+
+        Returns: loss, <whatever is returned by fwd_fn>
         """
         toks = Variable(batch[0], volatile=volatile).cuda()
         flat_tgts = toks[:, 1:].t().contiguous().view(-1)
@@ -148,7 +149,8 @@ class Environment(object):
             output = (output,)
         gen_log_probs = output[0]
         flat_gen_log_probs = gen_log_probs.view(-1, gen_log_probs.size(-1))
-        loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts)
+        loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts,
+                            ignore_index=self.opts.padding_idx)
         return (loss, *output)
 
     def train_hasher(self, hook=None):
@@ -189,7 +191,7 @@ class Environment(object):
     def pretrain_g(self):
         """Pretrains G using maximum-likelihood."""
         logging.info(f'[00] {self._EVAL_METRIC}: '
-                     '{self._compute_eval_metric():.3f}')
+                     f'{self._compute_eval_metric():.3f}')
         train_loader = self._create_dataloader(self.train_dataset)
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             tick = time.time()
@@ -215,6 +217,10 @@ class Environment(object):
                 f'({time.time() - tick:.1f})')
 
     def _forward_g_ml(self, batch, volatile=False):
+        """
+        batch: (toks: N*T, labels: N)
+        Returns: (tok_probs: T*N*V, next_state)
+        """
         return self._forward_seq2seq(lambda toks: self.g(toks[:, :-1])[0],
                                      batch, volatile=volatile)
 
@@ -255,7 +261,7 @@ class Environment(object):
 
         test_loader = self._create_dataloader(self.test_dataset)
         acc_real = 0
-        for i, (_, batch_toks) in enumerate(test_loader):
+        for i, (batch_toks, _) in enumerate(test_loader):
             if i == num_test_batches:
                 break
             toks = Variable(batch_toks[:, 1:].cuda())  # no init toks
@@ -441,7 +447,7 @@ class Environment(object):
         return loss_d - entropy_d * self.opts.d_ent_reg
 
     def _create_gen_dataset(self, gen, label, num_samples=None, seed=None):
-        num_samples = num_samples or self.opts.num_gen_samps
+        num_samples = num_samples or len(self.train_dataset)
         seed = seed or self.opts.seed
         return dataset.GenDataset(generator=gen,
                                   label=label,

@@ -39,7 +39,7 @@ def main():
         with open(opts_file, 'wb') as f_opts:
             pickle.dump(vars(opts), f_opts)
 
-    logging.basicConfig(format='%(message)s', level=logging.DEBUG, filemode='w')
+    logging.basicConfig(format='%(message)s', level=logging.INFO, filemode='w')
     logger = logging.getLogger()
 
     torch.manual_seed(opts.seed)
@@ -50,13 +50,11 @@ def main():
     for phase in PHASES:
         if phase == HASHER and not opts.exploration_bonus:
             continue
-        if phase != HASHER:
-            exit()  # DEBUG
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase, opts) as phase_runner:
             if phase_runner:
-                logger.debug(f'# running phase: {phase}')
+                logger.info(f'# running phase: {phase}')
                 phase_runner()  # pylint: disable=not-callable
 
 
@@ -85,7 +83,7 @@ def _phase(env, phase, opts):
         # import functools
         # def _saver(env, epoch):
         #     torch.save(env.hasher.state_dict(),
-        #                os.path.join(phase_dir, f'hasher_{epoch}.pth'))
+        #                os.path.join(phase_dir, f'{epoch}.pth'))
         # runner = functools.partial(env.train_hasher, hook=_saver)
         runner = env.train_hasher
     elif phase == G_ML:

@@ -1,8 +1,10 @@
 from .real import NLEnvironment
 from .synth import SynthEnvironment
 
+
 ENVS = ('real', 'synth')
-Real, SYNTH = ENVS
+REAL, SYNTH = ENVS
+
 
 def _get_env(env):
     if env == SYNTH:
@@ -22,5 +24,7 @@ def parse_env_opts(init_opts, remaining_opts, no_defaults=False):
         parser.set_defaults(**{opt: None for opt in vars(opts)})
         opts = parser.parse_args(remaining_opts)
     for k, v in vars(init_opts).items():
+        if k == 'env':
+            continue
         setattr(opts, k, v)
     return opts

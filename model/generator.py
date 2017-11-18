@@ -17,10 +17,10 @@ RNN, = TYPES
 class RNNGenerator(nn.Module):
     """An RNN token generator."""
 
-    def __init__(self, vocab_size, tok_emb_dim, rnn_dim, num_layers, **kwargs):
+    def __init__(self, vocab_size, tok_emb_dim, rnn_dim, num_layers,
+                 padding_idx=None, **unused_kwargs):
         super(RNNGenerator, self).__init__()
 
-        padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
         self.tok_emb = nn.Embedding(vocab_size, tok_emb_dim,
                                      padding_idx=padding_idx)
 
