@@ -2,17 +2,23 @@
 
 import argparse
 import logging
+import time
 
 import torch
 from torch.nn import functional as nnf
 from torch.autograd import Variable
 
+import common
+from common import LABEL_GEN, LABEL_REAL
+import dataset
+from dataset import samplers
 import model
-from dataset import samplers, ReplayBuffer
 
 
 class Environment(object):
     """A base class for training a SeqGAN model."""
+
+    _EVAL_METRIC = None  # string describing generator eval metric
 
     _STATEFUL = ('hasher', 'g', 'd', 'optim_g', 'optim_d')
 
@@ -21,6 +27,10 @@ class Environment(object):
 
         opts.num_hash_buckets = opts.num_hash_buckets or 2**opts.code_len
         self.opts = opts
+
+        torch.nn._functions.rnn.force_unfused = opts.grad_reg  # pylint: disable=protected-access
+
+        self.train_dataset = self.test_dataset = None  # `Dataset`s of real data
 
         self.g = model.generator.create(**vars(opts)).cuda()
         self.d = model.discriminator.create(**vars(opts)).cuda()
@@ -32,7 +42,9 @@ class Environment(object):
             self.hasher = model.hasher.create(**vars(opts)).cuda()
             self.optim_hasher = torch.optim.Adam(self.hasher.parameters(),
                                                  lr=opts.lr_hasher)
-            self.state_counts = torch.zeros(opts.num_hash_buckets)
+            self._powers_of_two = 2**torch.arange(opts.code_len)
+            self._state_counts = torch.zeros(opts.num_hash_buckets)
+            self._ones = torch.ones(1).expand(opts.batch_size)
 
         num_inits = max(opts.num_rollouts, 1) * opts.batch_size
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
@@ -90,8 +102,10 @@ class Environment(object):
         parser.add_argument('--discount', default=0.95, type=float)
         parser.add_argument('--g-ent-reg', default=1e-3, type=float)
         parser.add_argument('--d-ent-reg', default=1e-2, type=float)
-        parser.add_argument('--hasher-ent-reg', default=1e-2, type=float)
+        parser.add_argument('--hasher-ent-reg', default=1e-1, type=float)
+        parser.add_argument('--grad-reg', default=0, type=float)
         parser.add_argument('--temperature', default=1, type=float)
+        parser.add_argument('--rbuf-size', default=100, type=int)
 
         return parser
 
@@ -118,60 +132,9 @@ class Environment(object):
         self.optim_g.param_groups[0]['lr'] = self.opts.lr_g
         self.optim_d.param_groups[0]['lr'] = self.opts.lr_d
 
-    def train_hasher(self):
-        """Train a model that produces binary codes for LSH."""
+    def _compute_eval_metric(self):
+        """Returns a number by which the generative model should be evaluate."""
         raise NotImplementedError()
-
-    def pretrain_g(self):
-        """Pretrains G on a to-be-implemented dataset."""
-        raise NotImplementedError()
-
-    def pretrain_d(self):
-        """Pretrains D on a to-be-implemented dataset and pretrained G."""
-        raise NotImplementedError()
-
-    def train_adv(self):
-        """Adversarially train G against D."""
-        raise NotImplementedError()
-
-    def get_tok_log_probs(self, gen, toks):
-        """
-        Returns log probabilities of tokens under a generative model.
-
-        Args:
-            gen: the generative model
-            toks: N*T
-
-        Returns:
-            tok_log_probs: T*N*V
-        """
-        tok_log_probs, _ = gen(torch.cat((self.init_toks, toks), 1))
-        return tok_log_probs[:-1]
-
-    def compute_acc(self, probs, label):
-        """Computes the accuracy given prob Variable and and label."""
-        self._labels.fill_(label)
-        probs = probs.data if isinstance(probs, Variable) else probs
-        return (probs.max(1)[1] == self._labels).float().mean()
-
-    def _create_dataloader(self, src_dataset, cycle=False):
-        dl_opts = {'batch_size': self.opts.batch_size,
-                   'num_workers': self.opts.nworkers,
-                   'pin_memory': True,
-                   'shuffle': not cycle}
-        if cycle:
-            dl_opts['sampler'] = samplers.InfiniteRandomSampler(src_dataset)
-        return torch.utils.data.DataLoader(src_dataset, **dl_opts)
-
-    def _create_replay_buffer(self, max_history, label):
-        replay_buffer = ReplayBuffer(max_history, label)
-        sampler = samplers.ReplayBufferSampler(replay_buffer,
-                                               self.opts.batch_size)
-        loader = torch.utils.data.DataLoader(replay_buffer,
-                                             batch_sampler=sampler,
-                                             num_workers=0,  # FIXME
-                                             pin_memory=True)
-        return replay_buffer, loader
 
     def _forward_seq2seq(self, fwd_fn, batch, volatile=False):
         """
@@ -188,12 +151,96 @@ class Environment(object):
         loss = nnf.nll_loss(flat_gen_log_probs, flat_tgts)
         return (loss, *output)
 
-    def _forward_hasher_train(self, batch, volatile=False):
-        return self._forward_seq2seq(self.hasher, batch, volatile=volatile)
+    def train_hasher(self, hook=None):
+        """Train an auto-encoder on the dataset for use in hashing."""
+        self.hasher.train()
+        train_loader = self._create_dataloader(self.train_dataset)
+        test_loader = self._create_dataloader(self.test_dataset)
 
-    def _forward_g_pretrain(self, batch, volatile=False):
+        for epoch in range(1, self.opts.train_hasher_epochs + 1):
+            tick = time.time()
+            train_loss = train_entropy = 0
+            for batch in train_loader:
+                loss, _, code_logits = self._forward_seq2seq(self.hasher, batch)
+                train_loss += loss.data[0]
+
+                entropy = self._get_entropy(code_logits)[0]
+                loss -= entropy * self.opts.hasher_ent_reg
+                train_entropy += entropy.data[0]
+
+                self.optim_hasher.zero_grad()
+                loss.backward()
+                self.optim_hasher.step()
+            train_loss /= len(train_loader)
+            train_entropy /= len(train_loader)
+
+            test_loss = sum(self._forward_seq2seq(self.hasher, batch,
+                                                  volatile=True)[0].data[0]
+                            for batch in test_loader) / len(test_loader)
+            logging.info(
+                f'[{epoch:02d}] '
+                f'loss: train={train_loss:.3f} test={test_loss:.3f}  '
+                f'H: {train_entropy:.3f}  '
+                f'({time.time() - tick:.1f})')
+
+            if callable(hook):
+                hook(self, epoch)
+
+    def pretrain_g(self):
+        """Pretrains G using maximum-likelihood."""
+        logging.info(f'[00] {self._EVAL_METRIC}: '
+                     '{self._compute_eval_metric():.3f}')
+        train_loader = self._create_dataloader(self.train_dataset)
+        for epoch in range(1, self.opts.pretrain_g_epochs + 1):
+            tick = time.time()
+            train_loss = entropy = gnorm = 0
+            for batch in train_loader:
+                loss, gen_log_probs = self._forward_g_ml(batch)
+                entropy += self._get_entropy(gen_log_probs)[1].data[0]
+                train_loss += loss.data[0]
+
+                self.optim_g.zero_grad()
+                loss.backward()
+                gnorm += self._get_grad_norm(self.g).data[0]
+                self.optim_g.step()
+            train_loss /= len(train_loader)
+            entropy /= len(train_loader)
+            gnorm /= len(train_loader)
+
+            logging.info(
+                f'[{epoch:02d}] loss: {train_loss:.3f}  '
+                f'{self._EVAL_METRIC}: {self._compute_eval_metric():.3f}  '
+                f'H: {entropy:.2f}  '
+                f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}  '
+                f'({time.time() - tick:.1f})')
+
+    def _forward_g_ml(self, batch, volatile=False):
         return self._forward_seq2seq(lambda toks: self.g(toks[:, :-1])[0],
                                      batch, volatile=volatile)
+
+    def pretrain_d(self):
+        """Pretrains D using pretrained G."""
+        for epoch in range(1, self.opts.pretrain_d_epochs+1):
+            tick = time.time()
+            gen_dataset = self._create_gen_dataset(self.g, LABEL_GEN,
+                                                   seed=self.opts.seed+epoch)
+            dataloader = self._create_dataloader(torch.utils.data.ConcatDataset(
+                (self.train_dataset, gen_dataset)))
+
+            train_loss = 0
+            for batch in dataloader:
+                loss, _ = self._forward_d(batch)
+                train_loss += loss.data[0]
+
+                self.optim_d.zero_grad()
+                loss.backward()
+                self.optim_d.step()
+            train_loss /= len(dataloader)
+
+            acc_real, acc_gen = self._compute_d_test_acc()
+            logging.info(f'[{epoch:02d}] loss: {train_loss:.3f}  '
+                         f'acc: real={acc_real:.2f} gen={acc_gen:.2f}  '
+                         f'({time.time() - tick:.1f})')
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
@@ -203,15 +250,228 @@ class Environment(object):
         d_log_probs = self.d(toks[:, has_init:])
         return nnf.nll_loss(d_log_probs, labels), d_log_probs
 
-    @staticmethod
-    def _gather_act_probs(acts, probs):
-        """
-        Returns probs for each action: (N*T)
+    def _compute_d_test_acc(self, num_samples=256):
+        num_test_batches = max(num_samples // len(self.init_toks), 1)
 
-        acts: N*T
-        probs: T*N*V
-        """
-        return probs.transpose(0, 1).gather(-1, acts.unsqueeze(-1)).squeeze(-1)
+        test_loader = self._create_dataloader(self.test_dataset)
+        acc_real = 0
+        for i, (_, batch_toks) in enumerate(test_loader):
+            if i == num_test_batches:
+                break
+            toks = Variable(batch_toks[:, 1:].cuda())  # no init toks
+            acc_real += self.compute_acc(self.d(toks), LABEL_REAL)
+        acc_real /= num_test_batches
+
+        acc_gen = 0
+        with common.rand_state(torch.cuda, -1):
+            for _ in range(num_test_batches):
+                gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
+                acc_gen += self.compute_acc(self.d(gen_seqs), LABEL_GEN)
+        acc_gen /= num_test_batches
+
+        return acc_real, acc_gen
+
+    def compute_acc(self, probs, label):
+        """Computes the accuracy given prob Variable and and label."""
+        self._labels.fill_(label)
+        probs = probs.data if isinstance(probs, Variable) else probs
+        return (probs.max(1)[1] == self._labels).float().mean()
+
+    def train_adv(self):
+        """Adversarially train G against D."""
+
+        self.optim_g.param_groups[0]['lr'] *= 0.01
+        if self.opts.exploration_bonus:
+            self.hasher.eval()
+
+        real_dataloader = iter(
+            self._create_dataloader(self.train_dataset, cycle=True))
+
+        replay_buffer, rbuf_loader = self._create_replay_buffer(
+            self.opts.rbuf_size, LABEL_GEN)
+        replay_buffer_iter = None
+
+        for i in range(1, self.opts.adv_train_iters+1):
+            tick = time.time()
+
+            loss_g, gen_seqs, entropy_g = self._train_adv_g(replay_buffer)
+            self.optim_g.zero_grad()
+            loss_g.backward(create_graph=bool(self.opts.grad_reg))
+            if not self.opts.grad_reg:
+                self.optim_g.step()
+
+            if replay_buffer_iter is None:
+                replay_buffer_iter = iter(rbuf_loader)
+
+            loss_d = self._train_adv_d(gen_seqs, real_dataloader,
+                                       replay_buffer_iter)
+            self.optim_d.zero_grad()
+            loss_d.backward(create_graph=bool(self.opts.grad_reg))
+
+            gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
+            gnorm = (gnormg * (self.opts.grad_reg * 50.) +
+                     gnormd * (self.opts.grad_reg * 0.1))
+            # nn.utils.clip_grad_norm(self.g.parameters(), 5)
+            # nn.utils.clip_grad_norm(self.d.parameters(), 1)
+            if self.opts.grad_reg:
+                gnorm.backward()
+                self.optim_g.step()
+            self.optim_d.step()
+
+            acc_oracle, acc_gen = self._compute_d_test_acc()
+            logging.info(
+                f'[{i:03d}] '
+                f'{self._EVAL_METRIC}: {self._compute_eval_metric():.3f}  '
+                f'acc: o={acc_oracle:.2f} g={acc_gen:.2f}  '
+                f'gnorm: g={gnormg.data[0]:.2f} d={gnormd.data[0]:.2f}  '
+                f'H: {entropy_g.data[0]:.2f}  '
+                f'({time.time() - tick:.1f})')
+
+    def _train_adv_g(self, replay_buffer):
+        losses = []
+        entropies = []
+        for i in range(self.opts.adv_g_iters):
+            # train G
+            gen_seqs, gen_log_probs = self.g.rollout(
+                self.init_toks, self.opts.seqlen,
+                temperature=self.opts.temperature)
+            gen_seqs = torch.cat(gen_seqs, -1)  # N*T
+            if i == 0:
+                replay_buffer.add_samples(gen_seqs)
+
+            gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
+            seq_log_probs = gen_log_probs.transpose(0, 1).gather(  # N*T
+                -1, gen_seqs.unsqueeze(-1)).squeeze(-1)
+
+            advantages = self._get_advantages(gen_seqs)  # N*T
+            score = (seq_log_probs * advantages).sum(1).mean()
+            if self.opts.exploration_bonus:
+                score = score + self._get_exploration_bonus(gen_seqs)
+
+            disc_entropy, entropy = self._get_entropy(
+                gen_log_probs, discount_rate=self.opts.discount)
+
+            # _, roomtemp_lprobs = self.g.rollout(
+            #     self.init_toks, self.opts.seqlen, temperature=1)
+            # roomtemp_lprobs = torch.stack(roomtemp_lprobs)
+            # _, entropy = self._get_entropy(roomtemp_lprobs)
+
+            entropies.append(entropy)
+            losses.append(-score - disc_entropy * self.opts.g_ent_reg)
+
+        loss = sum(losses)
+        avg_entropy = sum(entropies) / len(entropies)
+        return loss, gen_seqs, avg_entropy
+
+    def _get_exploration_bonus(self, gen_seqs):
+        hash_codes = self.hasher(gen_seqs).data  # N*code_len
+        hash_buckets = (hash_codes @ self._powers_of_two).long()  # N
+        visit_counts = self._state_counts[hash_buckets]  # N
+        self._state_counts.put_(hash_buckets, self._ones, accumulate=True)
+
+    def _get_qs(self, g_ro, rep_gen_seqs):
+        qs = Variable(torch.cuda.FloatTensor(
+            self.opts.seqlen, self.opts.batch_size).zero_())
+
+        qs[-1] = self.d(rep_gen_seqs[:qs.size(1)])[:, LABEL_REAL]
+
+        if self.opts.num_rollouts == 0:
+            qs.data[:-1] = qs.data[None, -1].expand(qs.size(0) - 1, qs.size(1))
+            qs.data.exp_()
+            return qs.t().detach()
+
+        ro_rng = torch.cuda.get_rng_state()
+        _, ro_hid = g_ro(self.ro_init_toks)
+        for n in range(1, self.opts.seqlen):
+            # ro_seqs, _  = g_ro.rollout(rep_gen_seqs[:,:n], self.opts.seqlen-n)
+
+            torch.cuda.set_rng_state(ro_rng)
+            ro_state = (rep_gen_seqs[:, n-1].unsqueeze(-1), ro_hid)
+            ro_seqs, _, (ro_hid, ro_rng) = g_ro.rollout(
+                ro_state, self.opts.seqlen - n, return_first_state=True)
+            full_ro = torch.cat([rep_gen_seqs[:, :n]] + ro_seqs, -1)
+            assert full_ro.size(1) == self.opts.seqlen
+
+            q = self.d(full_ro).view(self.opts.num_rollouts, -1, 2)
+            # LABEL_G gives cost, LABEL_REAL gives reward
+            qs[n-1] = q.mean(0)[:, LABEL_REAL]
+
+        qs.data.exp_()
+        return qs.t().detach()
+
+    def _get_advantages(self, gen_seqs):
+        rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
+        qs_g = self._get_qs(self.g, rep_gen_seqs)
+
+        advs = qs_g  # something clever would be inserted here
+
+        # advs = advs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # adv to go
+        advs -= advs.mean()
+        advs /= advs.std()
+        return advs.detach()
+
+    def _train_adv_d(self, gen_seqs, real_dataloader, replay_buffer_iter):
+        REAL_W = 0.5
+        GEN_W = (1 - REAL_W)
+        RBUF_W = 0.5
+
+        loss_d, d_log_probs = self._forward_d(next(real_dataloader))
+        loss_d *= REAL_W
+        entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
+
+        n_rbuf_batches = min(len(replay_buffer_iter) // self.opts.batch_size, 4)
+        cur_w = GEN_W
+        if n_rbuf_batches:
+            cur_w *= RBUF_W
+            rbuf_batch_w = GEN_W * RBUF_W / n_rbuf_batches
+
+        self._labels.fill_(LABEL_GEN)
+        loss_d_g, d_log_probs = self._forward_d(
+            (gen_seqs.data, self._labels), has_init=False)
+
+        loss_d += cur_w * loss_d_g
+        entropy_d += cur_w * self._get_entropy(d_log_probs)[0]
+
+        for _ in range(n_rbuf_batches):
+            loss_d_g, d_log_probs = self._forward_d(
+                next(replay_buffer_iter), has_init=False)
+            loss_d += rbuf_batch_w * loss_d_g
+            entropy_d += rbuf_batch_w * self._get_entropy(d_log_probs)[0]
+
+        return loss_d - entropy_d * self.opts.d_ent_reg
+
+    def _create_gen_dataset(self, gen, label, num_samples=None, seed=None):
+        num_samples = num_samples or self.opts.num_gen_samps
+        seed = seed or self.opts.seed
+        return dataset.GenDataset(generator=gen,
+                                  label=label,
+                                  seqlen=self.opts.seqlen,
+                                  seed=seed,
+                                  gen_init_toks=self.ro_init_toks,
+                                  num_samples=num_samples)
+
+    def _create_dataloader(self, src_dataset, cycle=False):
+        dl_opts = {'batch_size': self.opts.batch_size,
+                   'num_workers': self.opts.nworkers,
+                   'pin_memory': True,
+                   'shuffle': not cycle}
+        if cycle:
+            dl_opts['sampler'] = samplers.InfiniteRandomSampler(src_dataset)
+        return torch.utils.data.DataLoader(src_dataset, **dl_opts)
+
+    def _create_replay_buffer(self, max_history, label):
+        replay_buffer = dataset.ReplayBuffer(max_history, label)
+        sampler = samplers.ReplayBufferSampler(replay_buffer,
+                                               self.opts.batch_size)
+        loader = torch.utils.data.DataLoader(replay_buffer,
+                                             batch_sampler=sampler,
+                                             num_workers=0,  # FIXME
+                                             pin_memory=True)
+        return replay_buffer, loader
+
+    @staticmethod
+    def _get_grad_norm(mod):
+        return sum((p.grad**2).sum() for p in mod.parameters(dx2=True))
 
     @staticmethod
     def _get_entropy(log_probs, discount_rate=None):

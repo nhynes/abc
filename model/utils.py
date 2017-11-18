@@ -4,13 +4,14 @@ from torch import nn
 
 class Apply(nn.Module):
     """A Module that wraps a function."""
-    def __init__(self, fn):
+    def __init__(self, fn, detach=False):
         super(Apply, self).__init__()
         self.fn = fn
+        self.detach = detach
 
-    def forward(self, input, detach=False):
+    def forward(self, input):
         output = self.fn(input)
-        if detach:
+        if self.detach:
             output = output.detach()
         return output
 

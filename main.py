@@ -82,6 +82,11 @@ def _phase(env, phase, opts):
         return
 
     if phase == HASHER:
+        # import functools
+        # def _saver(env, epoch):
+        #     torch.save(env.hasher.state_dict(),
+        #                os.path.join(phase_dir, f'hasher_{epoch}.pth'))
+        # runner = functools.partial(env.train_hasher, hook=_saver)
         runner = env.train_hasher
     elif phase == G_ML:
         runner = env.pretrain_g
