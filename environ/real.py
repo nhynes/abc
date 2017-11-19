@@ -38,6 +38,7 @@ class NLEnvironment(Environment):
             lr_d=0.001,
             lr_hasher=0.002,
             hasher_ent_reg=0.3,
+            log_freq=20,
             )
         return parser
 
@@ -60,6 +61,6 @@ class NLEnvironment(Environment):
         gen_toks, _ = self.g.rollout(self.init_toks[:5], self.opts.seqlen)
         for tok_vec in torch.cat(gen_toks, -1).data:
             logging.debug(self.test_dataset.decode(tok_vec))
-            logging.debug('\n---')
+        logging.debug('\n---')
 
         return val_loss

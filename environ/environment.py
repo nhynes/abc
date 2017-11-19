@@ -42,9 +42,8 @@ class Environment(object):
             self.hasher = model.hasher.create(**vars(opts)).cuda()
             self.optim_hasher = torch.optim.Adam(self.hasher.parameters(),
                                                  lr=opts.lr_hasher)
-            self._powers_of_two = 2**torch.arange(opts.code_len)
-            self._state_counts = torch.zeros(opts.num_hash_buckets)
-            self._ones = torch.ones(1).expand(opts.batch_size)
+            self.state_counter = model.hash_counter.HashCounter(
+                self.hasher, opts.num_hash_buckets).cuda()
 
         num_inits = max(opts.num_rollouts, 1) * opts.batch_size
         self.ro_init_toks = Variable(torch.cuda.LongTensor(num_inits, 1))
@@ -61,6 +60,7 @@ class Environment(object):
         # general
         parser.add_argument('--seed', default=42, type=int)
         parser.add_argument('--debug', action='store_true')
+        parser.add_argument('--log-freq', default=1, type=int)
 
         # data
         parser.add_argument('--nworkers', default=4, type=int)
@@ -82,7 +82,7 @@ class Environment(object):
         parser.add_argument('--filter-widths',
                             default=list(range(1, 11)) + [15, 20],
                             nargs='+', type=int)
-        parser.add_argument('--exploration-bonus', action='store_true')
+        parser.add_argument('--exploration-bonus', default=0, type=float)
         parser.add_argument('--code-len', type=int)
         parser.add_argument('--num-hash-buckets',
                             type=lambda x: 2**int(
@@ -286,9 +286,11 @@ class Environment(object):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        self.optim_g.param_groups[0]['lr'] *= 0.01
+        self.optim_g.param_groups[0]['lr'] *= 0.1
+        # self.optim_d.param_groups[0]['lr'] *= 0.1
         if self.opts.exploration_bonus:
             self.hasher.eval()
+            self._init_state_counter()
 
         real_dataloader = iter(
             self._create_dataloader(self.train_dataset, cycle=True))
@@ -317,21 +319,26 @@ class Environment(object):
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
             gnorm = (gnormg * (self.opts.grad_reg * 50.) +
                      gnormd * (self.opts.grad_reg * 0.1))
-            # nn.utils.clip_grad_norm(self.g.parameters(), 5)
-            # nn.utils.clip_grad_norm(self.d.parameters(), 1)
             if self.opts.grad_reg:
                 gnorm.backward()
                 self.optim_g.step()
             self.optim_d.step()
 
-            acc_oracle, acc_gen = self._compute_d_test_acc()
-            logging.info(
-                f'[{i:03d}] '
-                f'{self._EVAL_METRIC}: {self._compute_eval_metric():.3f}  '
-                f'acc: o={acc_oracle:.2f} g={acc_gen:.2f}  '
-                f'gnorm: g={gnormg.data[0]:.2f} d={gnormd.data[0]:.2f}  '
-                f'H: {entropy_g.data[0]:.2f}  '
-                f'({time.time() - tick:.1f})')
+            if (i-1) % self.opts.log_freq == 0:
+                acc_oracle, acc_gen = self._compute_d_test_acc()
+                logging.info(
+                    f'[{i:03d}] '
+                    f'{self._EVAL_METRIC}: {self._compute_eval_metric():.3f}  '
+                    f'acc: o={acc_oracle:.2f} g={acc_gen:.2f}  '
+                    f'gnorm: g={gnormg.data[0]:.2f} d={gnormd.data[0]:.2f}  '
+                    f'H: {entropy_g.data[0]:.2f}  '
+                    f'({time.time() - tick:.1f})')
+
+    def _init_state_counter(self):
+        self.state_counter.train()
+        for toks, _ in self._create_dataloader(self.train_dataset):
+            self.state_counter(Variable(toks.cuda(), volatile=True))
+        self.state_counter.eval()
 
     def _train_adv_g(self, replay_buffer):
         losses = []
@@ -351,8 +358,6 @@ class Environment(object):
 
             advantages = self._get_advantages(gen_seqs)  # N*T
             score = (seq_log_probs * advantages).sum(1).mean()
-            if self.opts.exploration_bonus:
-                score = score + self._get_exploration_bonus(gen_seqs)
 
             disc_entropy, entropy = self._get_entropy(
                 gen_log_probs, discount_rate=self.opts.discount)
@@ -369,52 +374,70 @@ class Environment(object):
         avg_entropy = sum(entropies) / len(entropies)
         return loss, gen_seqs, avg_entropy
 
-    def _get_exploration_bonus(self, gen_seqs):
-        hash_codes = self.hasher(gen_seqs).data  # N*code_len
-        hash_buckets = (hash_codes @ self._powers_of_two).long()  # N
-        visit_counts = self._state_counts[hash_buckets]  # N
-        self._state_counts.put_(hash_buckets, self._ones, accumulate=True)
+    def _get_advantages(self, gen_seqs):
+        rep_gen_seqs = gen_seqs.repeat(max(1, self.opts.num_rollouts), 1)
+        qs_g = self._get_qs(self.g, rep_gen_seqs)  # N*T
+
+        advs = qs_g  # something clever like PPO would be inserted here
+
+        # advs = advs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # adv to go
+        advs -= advs.mean(1, keepdim=True)
+        advs /= advs.std(1, keepdim=True)
+        return advs.detach()
 
     def _get_qs(self, g_ro, rep_gen_seqs):
-        qs = Variable(torch.cuda.FloatTensor(
-            self.opts.seqlen, self.opts.batch_size).zero_())
+        rep_gen_seqs.volatile = True
 
-        qs[-1] = self.d(rep_gen_seqs[:qs.size(1)])[:, LABEL_REAL]
+        qs = torch.cuda.FloatTensor(
+            self.opts.seqlen, self.opts.batch_size).zero_()
+        bonus = torch.cuda.FloatTensor(1, 1).zero_().expand_as(qs)
+
+        gen_seqs = rep_gen_seqs[:self.opts.batch_size]
+        qs[-1] = self.d(gen_seqs)[:, LABEL_REAL].data
+
+        if self.opts.exploration_bonus:
+            # bonus = self._get_exploration_bonus(gen_seqs).repeat(  # T*N
+            #     self.opts.seqlen, 1)
+            bonus = bonus.contiguous()
+            bonus[-1] = self._get_exploration_bonus(gen_seqs)
 
         if self.opts.num_rollouts == 0:
-            qs.data[:-1] = qs.data[None, -1].expand(qs.size(0) - 1, qs.size(1))
-            qs.data.exp_()
-            return qs.t().detach()
+            return Variable(qs.t().exp_().add_(bonus.t()))
 
         ro_rng = torch.cuda.get_rng_state()
         _, ro_hid = g_ro(self.ro_init_toks)
         for n in range(1, self.opts.seqlen):
-            # ro_seqs, _  = g_ro.rollout(rep_gen_seqs[:,:n], self.opts.seqlen-n)
+            # ro_suff, _  = g_ro.rollout(rep_gen_seqs[:,:n], self.opts.seqlen-n)
 
             torch.cuda.set_rng_state(ro_rng)
             ro_state = (rep_gen_seqs[:, n-1].unsqueeze(-1), ro_hid)
-            ro_seqs, _, (ro_hid, ro_rng) = g_ro.rollout(
+            ro_suffix, _, (ro_hid, ro_rng) = g_ro.rollout(
                 ro_state, self.opts.seqlen - n, return_first_state=True)
-            full_ro = torch.cat([rep_gen_seqs[:, :n]] + ro_seqs, -1)
-            assert full_ro.size(1) == self.opts.seqlen
+            ro = torch.cat([rep_gen_seqs[:, :n]] + ro_suffix, -1)
+            assert ro.size(1) == self.opts.seqlen
 
-            q = self.d(full_ro).view(self.opts.num_rollouts, -1, 2)
+            qs[n-1] = self._ro_mean(self.d(ro), (-1, 2))[:, LABEL_REAL].data
             # LABEL_G gives cost, LABEL_REAL gives reward
-            qs[n-1] = q.mean(0)[:, LABEL_REAL]
+            # if self.opts.exploration_bonus:
+            #     bonus[n-1] = self._ro_mean(self._get_exploration_bonus(ro))
 
-        qs.data.exp_()
-        return qs.t().detach()
+        return Variable(qs.t().exp_().add_(bonus.t()))
 
-    def _get_advantages(self, gen_seqs):
-        rep_gen_seqs = gen_seqs.repeat(self.opts.num_rollouts, 1)
-        qs_g = self._get_qs(self.g, rep_gen_seqs)
+    def _ro_mean(self, t, sizes=(-1,)):
+        """Averages a tensor over rollouts.
+        t: (num_rollouts*N)*sizes
 
-        advs = qs_g  # something clever would be inserted here
+        Returns: N*sizes
+        """
+        return t.view(self.opts.num_rollouts, *sizes).mean(0)
 
-        # advs = advs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # adv to go
-        advs -= advs.mean()
-        advs /= advs.std()
-        return advs.detach()
+    def _get_exploration_bonus(self, gen_seqs):
+        seq_buckets = self.state_counter(
+            Variable(gen_seqs.data, volatile=True))
+        reachable = self.state_counter.counts_train
+        visit_counts = self.state_counter.counts[seq_buckets]
+        bonus_weights = (reachable + 0.1).log() * self.opts.exploration_bonus
+        return bonus_weights[seq_buckets] / visit_counts**0.5
 
     def _train_adv_d(self, gen_seqs, real_dataloader, replay_buffer_iter):
         REAL_W = 0.5
@@ -472,7 +495,7 @@ class Environment(object):
                                                self.opts.batch_size)
         loader = torch.utils.data.DataLoader(replay_buffer,
                                              batch_sampler=sampler,
-                                             num_workers=0,  # FIXME
+                                             num_workers=0,  # TODO
                                              pin_memory=True)
         return replay_buffer, loader
 

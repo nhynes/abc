@@ -39,8 +39,7 @@ def main():
         with open(opts_file, 'wb') as f_opts:
             pickle.dump(vars(opts), f_opts)
 
-    logging.basicConfig(format='%(message)s', level=logging.INFO, filemode='w')
-    logger = logging.getLogger()
+    logging.basicConfig(format='%(message)s', level=logging.DEBUG, filemode='w')
 
     torch.manual_seed(opts.seed)
     torch.cuda.manual_seed_all(opts.seed)
@@ -54,7 +53,7 @@ def main():
         torch.cuda.manual_seed_all(opts.seed)
         with _phase(env, phase, opts) as phase_runner:
             if phase_runner:
-                logger.info(f'# running phase: {phase}')
+                logging.debug(f'# running phase: {phase}')
                 phase_runner()  # pylint: disable=not-callable
 
 
