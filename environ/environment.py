@@ -33,9 +33,11 @@ class Environment(object):
         self.train_dataset = self.test_dataset = None  # `Dataset`s of real data
 
         self.g = model.generator.create(**vars(opts)).cuda()
+        self.tgt_g = model.generator.create(**vars(opts)).cuda()
         self.d = model.discriminator.create(**vars(opts)).cuda()
 
         self.optim_g = torch.optim.Adam(self.g.parameters(), lr=opts.lr_g)
+        self.optim_tgt_g = torch.optim.Adam(self.tgt_g.parameters(), lr=opts.lr_g)
         self.optim_d = torch.optim.Adam(self.d.parameters(), lr=opts.lr_d)
 
         if opts.exploration_bonus:
@@ -190,9 +192,14 @@ class Environment(object):
 
     def pretrain_g(self):
         """Pretrains G using maximum-likelihood."""
+        best_val = self._compute_eval_metric()
         logging.info(f'[00] {self._EVAL_METRIC}: '
-                     f'{self._compute_eval_metric():.3f}')
+                     f'{best_val:.3f}')
         train_loader = self._create_dataloader(self.train_dataset)
+
+        self.tgt_g.load_state_dict(self.g.state_dict())
+        self.optim_tgt_g.load_state_dict(self.optim_g.state_dict())
+
         for epoch in range(1, self.opts.pretrain_g_epochs + 1):
             tick = time.time()
             train_loss = entropy = gnorm = 0
@@ -209,9 +216,19 @@ class Environment(object):
             entropy /= len(train_loader)
             gnorm /= len(train_loader)
 
+            val = self._compute_eval_metric()
+            if val >= best_val:
+                self.g.load_state_dict(self.tgt_g.state_dict())
+                self.optim_g.load_state_dict(self.optim_tgt_g.state_dict())
+                self.optim_g.param_groups[0]['lr'] = 0.001
+                continue
+            best_val = val
+            self.tgt_g.load_state_dict(self.g.state_dict())
+            self.optim_tgt_g.load_state_dict(self.optim_g.state_dict())
+
             logging.info(
                 f'[{epoch:02d}] loss: {train_loss:.3f}  '
-                f'{self._EVAL_METRIC}: {self._compute_eval_metric():.3f}  '
+                f'{self._EVAL_METRIC}: {best_val:.3f}  '
                 f'H: {entropy:.2f}  '
                 f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}  '
                 f'({time.time() - tick:.1f})')
@@ -286,7 +303,7 @@ class Environment(object):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        self.optim_g.param_groups[0]['lr'] *= 0.1
+        self.optim_g.param_groups[0]['lr'] *= 0.001
         # self.optim_d.param_groups[0]['lr'] *= 0.1
         if self.opts.exploration_bonus:
             self.hasher.eval()
@@ -299,6 +316,10 @@ class Environment(object):
             self.opts.rbuf_size, LABEL_GEN)
         replay_buffer_iter = None
 
+        self.tgt_g.load_state_dict(self.g.state_dict())
+        self.optim_tgt_g.load_state_dict(self.optim_g.state_dict())
+        best_val = self._compute_eval_metric()
+
         for i in range(1, self.opts.adv_train_iters+1):
             tick = time.time()
 
@@ -307,6 +328,16 @@ class Environment(object):
             loss_g.backward(create_graph=bool(self.opts.grad_reg))
             if not self.opts.grad_reg:
                 self.optim_g.step()
+
+            val = self._compute_eval_metric()
+            if val >= best_val:
+                self.g.load_state_dict(self.tgt_g.state_dict())
+                self.optim_g.load_state_dict(self.optim_tgt_g.state_dict())
+                continue
+            best_val = val
+            print(best_val)
+            self.tgt_g.load_state_dict(self.g.state_dict())
+            self.optim_tgt_g.load_state_dict(self.optim_g.state_dict())
 
             if replay_buffer_iter is None:
                 replay_buffer_iter = iter(rbuf_loader)
@@ -322,7 +353,7 @@ class Environment(object):
             if self.opts.grad_reg:
                 gnorm.backward()
                 self.optim_g.step()
-            self.optim_d.step()
+            # self.optim_d.step()
 
             if (i-1) % self.opts.log_freq == 0:
                 acc_oracle, acc_gen = self._compute_d_test_acc()

@@ -34,6 +34,9 @@ class NLDataset(torch.utils.data.Dataset):
                 continue
             self.qtoks.append(qtoks)
 
+        if part == 'val':
+            self.qtoks = self.qtoks[:2048]
+
     def __getitem__(self, index):
         toks = self.qtoks[index]
         qtoks = torch.LongTensor(self.seqlen + 1).zero_()

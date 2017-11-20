@@ -58,9 +58,9 @@ class NLEnvironment(Environment):
         val_loss = sum(self._forward_g_ml(batch, volatile=True)[0].data[0]
                        for batch in test_loader) / len(test_loader)
 
-        gen_toks, _ = self.g.rollout(self.init_toks[:5], self.opts.seqlen)
-        for tok_vec in torch.cat(gen_toks, -1).data:
-            logging.debug(self.test_dataset.decode(tok_vec))
-        logging.debug('\n---')
+        # gen_toks, _ = self.g.rollout(self.init_toks[:5], self.opts.seqlen)
+        # for tok_vec in torch.cat(gen_toks, -1).data:
+        #     logging.debug(self.test_dataset.decode(tok_vec))
+        # logging.debug('\n---')
 
         return val_loss
