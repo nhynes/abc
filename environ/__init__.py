@@ -24,7 +24,7 @@ def parse_env_opts(init_opts, remaining_opts, no_defaults=False):
         parser.set_defaults(**{opt: None for opt in vars(opts)})
         opts = parser.parse_args(remaining_opts)
     for k, v in vars(init_opts).items():
-        if k == 'env':
+        if k == 'env' and no_defaults:
             continue
         setattr(opts, k, v)
     return opts

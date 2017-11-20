@@ -112,7 +112,7 @@ class Environment(object):
     def state(self):
         """Returns a dict containing the state of this Environment."""
         return {item: getattr(self, item).state_dict()
-                for item in self._STATEFUL}
+                for item in self._STATEFUL if hasattr(self, item)}
 
     @state.setter
     def state(self, state):

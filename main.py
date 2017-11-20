@@ -108,7 +108,7 @@ def _phase(env, phase, opts):
 
     yield runner
 
-    torch.save(env.state, snap_file)
+    torch.save(env.state, prefix_snap_file)
     for handler in file_handlers:
         logger.removeHandler(handler)
 
