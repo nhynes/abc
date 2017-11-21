@@ -26,13 +26,12 @@ class SynthEnvironment(Environment):
             choices=model.generator.TYPES)
         parser.add_argument('--oracle-dim', default=128, type=int)
         parser.add_argument('--num-gen-samps', default=100000, type=int)
-        parser.add_argument('--use-oracle-w2v', action='store_true')
         parser.set_defaults(
             seqlen=20,
             vocab_size=5000,
             g_tok_emb_dim=32,
             d_tok_emb_dim=32,
-            pretrain_g_epochs=50,  # try 20 when using oracle w2v
+            pretrain_g_epochs=50,  # try 20 when using pretrained w2v
             pretrain_d_epochs=10,
             train_hasher_epochs=25,
             adv_train_iters=750,
@@ -63,10 +62,12 @@ class SynthEnvironment(Environment):
             self.oracle, LABEL_REAL,
             num_samples=len(self.ro_init_toks)*5, seed=-1)
 
-        if self.opts.use_oracle_w2v:
+        if self.opts.load_w2v:
+            oracle_w2v = model.utils.Apply(self.oracle.tok_emb, detach=True)
             for net in (self.g, self.d):
-                net.tok_emb = model.utils.Apply(self.oracle.tok_emb,
-                                                detach=True)
+                net.tok_emb = oracle_w2v
+            if opts.exploration_bonus:
+                self.hasher.encoder.tok_emb = oracle_w2v
 
     def _create_oracle(self):
         """Returns a randomly initialized generator."""

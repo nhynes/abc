@@ -44,7 +44,28 @@ class NLEnvironment(Environment):
 
     def __init__(self, opts):
         """Creates a NLEnvironment."""
+        if opts.load_w2v:
+            w2v = torch.from_numpy(torch.np.load(opts.load_w2v))
+            w2v[0] = 0
+            opts.g_tok_emb_dim = opts.d_tok_emb_dim = w2v.shape[1]
+
         super(NLEnvironment, self).__init__(opts)
+
+        if opts.load_w2v:
+            def _grad_mask(grad):
+                masked_grad = grad.clone()
+                masked_grad[len(common.EXTRA_VOCAB):] = 0
+                return masked_grad
+
+            def _set_w2v(emb):
+                tok_embs = emb.weight
+                tok_embs.data.copy_(w2v)
+                tok_embs.register_hook(_grad_mask)
+
+            for net in (self.g, self.d):
+                _set_w2v(net.tok_emb)
+            if opts.exploration_bonus:
+                _set_w2v(self.hasher.encoder.tok_emb)
 
         self.train_dataset = dataset.NLDataset(part='train', **vars(opts))
         self.test_dataset = dataset.NLDataset(part='val', **vars(opts))

@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import time
 
 import torch
@@ -69,6 +70,7 @@ class Environment(object):
         parser.add_argument('--d-type', choices=model.discriminator.TYPES,
                             default=model.discriminator.RNN)
         parser.add_argument('--vocab-size', type=int)
+        parser.add_argument('--load-w2v', type=os.path.abspath)
         parser.add_argument('--g-tok-emb-dim', type=int)
         parser.add_argument('--d-tok-emb-dim', type=int)
         parser.add_argument('--rnn-dim', type=int)
