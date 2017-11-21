@@ -45,7 +45,8 @@ class RNNGenerator(nn.Module):
         init_state:
             toks: N*T or (toks, prev_hidden state)
         ro_steps: roll out this many steps
-        temperature: positive scalar parameter that raises entropy
+        temperature: non-negative scalar that controls entropy
+                     (0 = max likelihood)
 
         This method does not modify the global random state.
 
@@ -62,9 +63,13 @@ class RNNGenerator(nn.Module):
         gen_log_probs = []
         for i in range(ro_steps):
             tok_log_probs, gen_state = self(
-                gen_toks, gen_state, temperature=temperature)
+                gen_toks, gen_state, temperature=temperature or 1)
             tok_log_probs = tok_log_probs[-1]  # N*V
-            gen_toks = torch.multinomial(tok_log_probs.exp(), 1).detach()  # N*1
+            if temperature == 0:
+                gen_toks = tok_log_probs.max(-1)[1][:, None]
+            else:
+                gen_toks = torch.multinomial(tok_log_probs.exp(), 1)  # N*1
+            gen_toks = gen_toks.detach()
             gen_seqs.append(gen_toks)
             gen_log_probs.append(tok_log_probs)
             if i == 0 and return_first_state:

@@ -48,14 +48,16 @@ def ngram_count(seqs, n):
     return {tuple(ngram): count for ngram, count in zip(ngrams, counts)}
 
 
-def sample_gen(env, num_samps=10000, gen='g', return_probs=False):
+def sample_gen(env, num_samps=10000, gen='g', temperature=1,
+               return_probs=False):
     """Samples from a generative model."""
     samps = []
     probs = []
     gen = getattr(env, gen)
     num_batches = (num_samps + len(env.ro_init_toks)) // len(env.ro_init_toks)
     for _ in range(num_batches):
-        ro, ro_probs = gen.rollout(env.ro_init_toks, 20)
+        ro, ro_probs = gen.rollout(env.ro_init_toks, 20,
+                                   temperature=temperature)
         samps.append(torch.cat(ro, -1).data.cpu())
         if return_probs:
             probs.append(torch.stack(ro_probs).data.cpu())
