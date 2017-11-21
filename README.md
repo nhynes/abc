@@ -6,7 +6,7 @@ idea by adding more reinfocement learning and GAN techniques like:
 * [Consensus Optimization](https://arxiv.org/abs/1705.10461)
 * [count-based exploration bonus](https://arxiv.org/abs/1611.04717)
 * Proximal Policy Optimization (was not found to help, but can be found in
-  [this commit](af7d921ab96e20ba75a60558e1e293b8667b4480))
+  [this commit](https://github.com/nhynes/abc/commit/af7d921ab96e20ba75a60558e1e293b8667b4480))
 * advantage normalization
 
 
