@@ -252,9 +252,8 @@ class Environment(object):
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
-        toks = Variable(toks.view(-1, toks.size(-1)), volatile=volatile).cuda()
-        labels = Variable(labels.view(-1), volatile=volatile).cuda()
-
+        toks = Variable(toks, volatile=volatile).cuda()
+        labels = Variable(labels, volatile=volatile).cuda()
         d_log_probs = self.d(toks[:, has_init:])
         return nnf.nll_loss(d_log_probs, labels), d_log_probs
 

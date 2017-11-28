@@ -117,15 +117,14 @@ class CNNDiscriminator(Discriminator):
 class RNNDiscriminator(Discriminator):
     """An RNN token discriminator."""
 
-    def __init__(self, tok_emb_dim, **kwargs):
+    def __init__(self, tok_emb_dim, rnn_dim, **kwargs):
         super(RNNDiscriminator, self).__init__(tok_emb_dim=tok_emb_dim,
                                                **kwargs)
 
-        emb_dim = 64
-        self.rnn = nn.LSTM(tok_emb_dim, emb_dim, num_layers=2,
+        self.rnn = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=2,
                            bidirectional=True)
 
-        self.logits = nn.Linear(emb_dim * 2, 2)
+        self.logits = nn.Linear(rnn_dim * 2, 2)
 
     def _forward(self, toks):
         """
@@ -170,6 +169,7 @@ def test_rnn_discriminator():
     batch_size = 3
     vocab_size = 32
     tok_emb_dim = 10
+    rnn_dim = 4
     debug = True
 
     d = RNNDiscriminator(**locals())
