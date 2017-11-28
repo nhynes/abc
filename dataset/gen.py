@@ -38,10 +38,10 @@ class GenDataset(torch.utils.data.Dataset):
             self.samples = torch.cat(samples)
 
     def __getitem__(self, index):
-        label = self.label
-        if not isinstance(index, int):
-            label = torch.LongTensor(len(index)).fill_(self.label)
-        return self.samples[index], label
+        sample = self.samples[index]
+        labels = torch.LongTensor(sample.size()).fill_(self.label)
+        labels[sample == 0] = common.LABEL_PAD
+        return sample, labels
 
     def __len__(self):
         return len(self.samples)
@@ -116,4 +116,6 @@ def test_dataset_mask():
     gen_init_toks = Variable(torch.LongTensor(batch_size, 1).fill_(-1))
 
     ds = GenDataset(**locals())
+    samp, labels = ds[0]
     assert (ds.samples == expected_samps).all()
+    assert (labels[samp == 0] == common.LABEL_PAD).all()

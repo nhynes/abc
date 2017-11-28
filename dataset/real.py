@@ -42,7 +42,10 @@ class NLDataset(torch.utils.data.Dataset):
             qtoks[i] = self.vocab[tok]
         qtoks[len(toks)] = self.vocab[EOS]  # replaces final punct with </s>
 
-        return qtoks, 1
+        labels = torch.LongTensor(qtoks.size()).fill_(common.LABEL_REAL)
+        labels[qtoks == 0] = common.LABEL_PAD
+
+        return qtoks, labels
 
     def __len__(self):
         return len(self.qtoks)
@@ -81,3 +84,4 @@ def test_dataset():
     for i in rp:
         toks, labels = ds[i]
         assert (toks >= 0).all() and (toks < vocab_size).all()
+        assert (labels[toks == 0] == common.LABEL_PAD).all()

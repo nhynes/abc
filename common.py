@@ -11,7 +11,7 @@ STATE_FILE = 'state.pth'
 
 PHASES = ('hasher', 'g_ml', 'd_ml', 'adv')
 HASHER, G_ML, D_ML, ADV = PHASES
-LABEL_GEN, LABEL_REAL = 0, 1
+LABEL_PAD, LABEL_GEN, LABEL_REAL = -1, 0, 1
 
 EXTRA_VOCAB = ['PAD', 'UNK', '<s>', '</s>']
 PAD, UNK, BOS, EOS = EXTRA_VOCAB

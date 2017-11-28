@@ -10,7 +10,7 @@ from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import common
-from common import LABEL_GEN, LABEL_REAL
+from common import LABEL_PAD, LABEL_GEN, LABEL_REAL
 import dataset
 from dataset import samplers
 import model
@@ -252,10 +252,14 @@ class Environment(object):
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch
-        toks = Variable(toks, volatile=volatile).cuda()
-        labels = Variable(labels, volatile=volatile).cuda()
+        toks = Variable(toks.view(-1, toks.size(-1)).cuda(), volatile=volatile)
+        labels = Variable(labels.t()[has_init:].contiguous().cuda(),
+                          volatile=volatile)
+
         d_log_probs = self.d(toks[:, has_init:])
-        return nnf.nll_loss(d_log_probs, labels), d_log_probs
+        loss = nnf.nll_loss(d_log_probs.view(-1, 2), labels.view(-1),
+                            ignore_index=LABEL_PAD)
+        return loss, d_log_probs
 
     def _compute_d_test_acc(self, num_samples=256):
         num_test_batches = max(num_samples // len(self.init_toks), 1)
@@ -280,9 +284,8 @@ class Environment(object):
 
     def compute_acc(self, probs, label):
         """Computes the accuracy given prob Variable and and label."""
-        self._labels.fill_(label)
         probs = probs.data if isinstance(probs, Variable) else probs
-        return (probs.max(1)[1] == self._labels).float().mean()
+        return (probs[3].max(-1)[1] == label).float().mean()
 
     def train_adv(self):
         """Adversarially train G against D."""
@@ -390,11 +393,13 @@ class Environment(object):
     def _get_qs(self, g_ro, rep_gen_seqs):
         rep_gen_seqs.volatile = True
 
-        qs = torch.cuda.FloatTensor(
-            self.opts.seqlen, self.opts.batch_size).zero_()
-        bonus = torch.cuda.FloatTensor(1, 1).zero_().expand_as(qs)
+        # qs = torch.cuda.FloatTensor(
+        #     self.opts.seqlen, self.opts.batch_size).zero_()
+        # bonus = torch.cuda.FloatTensor(1, 1).zero_().expand_as(qs)
 
         gen_seqs = rep_gen_seqs[:self.opts.batch_size]
+        qs = self.d(gen_seqs)[:, :, LABEL_REAL].data  # T*N
+        return Variable(qs.t().exp_())
         qs[-1] = self.d(gen_seqs)[:, LABEL_REAL].data
 
         if self.opts.exploration_bonus:

@@ -8,6 +8,7 @@ from torch.nn import functional as nnf
 from torch.autograd import Variable
 
 import environ
+from .bottles import BottledLinear
 
 
 TYPES = ('cnn', 'rnn')
@@ -73,7 +74,7 @@ class Discriminator(nn.Module):
             toks = torch.cat(toks, -1)
         logits = self._forward(toks)
         fuzz = Variable(logits.data.new(logits.size()).normal_()) * self.stdev
-        return nnf.log_softmax(logits + fuzz, dim=1)
+        return nnf.log_softmax(logits + fuzz, dim=logits.ndimension()-1)
 
 
 
@@ -121,18 +122,16 @@ class RNNDiscriminator(Discriminator):
         super(RNNDiscriminator, self).__init__(tok_emb_dim=tok_emb_dim,
                                                **kwargs)
 
-        self.rnn = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=2,
-                           bidirectional=True)
-
-        self.logits = nn.Linear(rnn_dim * 2, 2)
+        self.rnn = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=2)
+        self.logits = BottledLinear(rnn_dim, 2)
 
     def _forward(self, toks):
         """
         toks: N*T
         """
         tok_embs = self.tok_emb(toks).transpose(0, 1)  # T*N*d_wemb
-        seq_embs, _ = self.rnn(tok_embs)
-        return self.logits(seq_embs[-1])
+        seq_embs, _ = self.rnn(tok_embs)  # T*N*rnn_dim
+        return self.logits(seq_embs)  # T*N*2
 
 
 def create(d_type, d_tok_emb_dim, **opts):
@@ -170,14 +169,16 @@ def test_rnn_discriminator():
     vocab_size = 32
     tok_emb_dim = 10
     rnn_dim = 4
+    seqlen = 20
     debug = True
 
     d = RNNDiscriminator(**locals())
 
-    preds = d(Variable(torch.LongTensor(batch_size, 20).fill_(1)))
-    assert preds.size(0) == batch_size
-    assert preds.size(1) == 2
-    assert torch.np.allclose(preds.data.exp().sum(1).numpy(), 1)
+    preds = d(Variable(torch.LongTensor(batch_size, seqlen).fill_(1)))
+    assert preds.size(0) == seqlen
+    assert preds.size(1) == batch_size
+    assert preds.size(2) == 2
+    assert torch.np.allclose(preds.data.exp().sum(-1).numpy(), 1)
 
     preds.sum().backward(create_graph=True)
     sum(p.grad.norm() for p in d.parameters(dx2=True)).backward()
