@@ -287,8 +287,8 @@ class Environment(object):
     def train_adv(self):
         """Adversarially train G against D."""
 
-        self.optim_g.param_groups[0]['lr'] *= 0.1
-        # self.optim_d.param_groups[0]['lr'] *= 0.1
+        self.optim_g = torch.optim.Adam(self.g.parameters(), lr=self.opts.lr_g)
+        self.optim_d = torch.optim.Adam(self.d.parameters(), lr=self.opts.lr_d)
         if self.opts.exploration_bonus:
             self.hasher.eval()
             self._init_state_counter()
@@ -319,8 +319,8 @@ class Environment(object):
             loss_d.backward(create_graph=bool(self.opts.grad_reg))
 
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
-            gnorm = (gnormg * (self.opts.grad_reg * 50.) +
-                     gnormd * (self.opts.grad_reg * 0.1))
+            gnorm = (gnormg * (self.opts.grad_reg * 1.) +
+                     gnormd * (self.opts.grad_reg * 1))
             if self.opts.grad_reg:
                 gnorm.backward()
                 self.optim_g.step()
@@ -383,8 +383,8 @@ class Environment(object):
         advs = qs_g  # something clever like PPO would be inserted here
 
         # advs = advs[:, self._inv_idx].cumsum(1)[:, self._inv_idx]  # adv to go
-        advs -= advs.mean(1, keepdim=True)
-        advs /= advs.std(1, keepdim=True)
+        advs -= advs.mean()
+        advs /= advs.std()
         return advs.detach()
 
     def _get_qs(self, g_ro, rep_gen_seqs):
