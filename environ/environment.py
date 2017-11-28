@@ -296,9 +296,10 @@ class Environment(object):
         real_dataloader = iter(
             self._create_dataloader(self.train_dataset, cycle=True))
 
-        replay_buffer, rbuf_loader = self._create_replay_buffer(
-            self.opts.rbuf_size, LABEL_GEN)
-        replay_buffer_iter = None
+        replay_buffer = rbuf_loader = replay_buffer_iter = None
+        if self.opts.rbuf_size:
+            replay_buffer, rbuf_loader = self._create_replay_buffer(
+                self.opts.rbuf_size, LABEL_GEN)
 
         for i in range(1, self.opts.adv_train_iters+1):
             tick = time.time()
@@ -309,7 +310,7 @@ class Environment(object):
             if not self.opts.grad_reg:
                 self.optim_g.step()
 
-            if replay_buffer_iter is None:
+            if replay_buffer and replay_buffer_iter is None:
                 replay_buffer_iter = iter(rbuf_loader)
 
             loss_d = self._train_adv_d(gen_seqs, real_dataloader,
@@ -341,7 +342,7 @@ class Environment(object):
             self.state_counter(Variable(toks.cuda(), volatile=True))
         self.state_counter.eval()
 
-    def _train_adv_g(self, replay_buffer):
+    def _train_adv_g(self, replay_buffer=None):
         losses = []
         entropies = []
         for i in range(self.opts.adv_g_iters):
@@ -350,7 +351,7 @@ class Environment(object):
                 self.init_toks, self.opts.seqlen,
                 temperature=self.opts.temperature)
             gen_seqs = torch.cat(gen_seqs, -1)  # N*T
-            if i == 0:
+            if i == 0 and replay_buffer:
                 replay_buffer.add_samples(gen_seqs)
 
             gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
@@ -440,7 +441,7 @@ class Environment(object):
         bonus_weights = (reachable + 0.1).log() * self.opts.exploration_bonus
         return bonus_weights[seq_buckets] / visit_counts**0.5
 
-    def _train_adv_d(self, gen_seqs, real_dataloader, replay_buffer_iter):
+    def _train_adv_d(self, gen_seqs, real_dataloader, replay_buffer_iter=None):
         REAL_W = 0.5
         GEN_W = (1 - REAL_W)
         RBUF_W = 0.5
@@ -449,7 +450,10 @@ class Environment(object):
         loss_d *= REAL_W
         entropy_d = REAL_W * self._get_entropy(d_log_probs)[0]
 
-        n_rbuf_batches = min(len(replay_buffer_iter) // self.opts.batch_size, 4)
+        n_rbuf_batches = 0
+        if replay_buffer_iter:
+            n_rbuf_batches = min(
+                len(replay_buffer_iter) // self.opts.batch_size, 4)
         cur_w = GEN_W
         if n_rbuf_batches:
             cur_w *= RBUF_W
