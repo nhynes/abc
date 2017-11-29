@@ -55,6 +55,7 @@ def sample_gen(env, num_samps=10000, gen='g', temperature=1,
     probs = []
     gen = getattr(env, gen)
     num_batches = (num_samps + len(env.ro_init_toks)) // len(env.ro_init_toks)
+    env.ro_init_toks.volatile = True
     for _ in range(num_batches):
         ro, ro_probs = gen.rollout(env.ro_init_toks, 20,
                                    temperature=temperature)

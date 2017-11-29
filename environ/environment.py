@@ -509,20 +509,20 @@ class Environment(object):
                                              pin_memory=True)
         return replay_buffer, loader
 
-    @staticmethod
-    def _get_grad_norm(mod):
+    def _get_grad_norm(self,mod):
         return sum((p.grad**2).sum() for p in mod.parameters(dx2=True))
 
-    @staticmethod
-    def _get_entropy(log_probs, discount_rate=None):
+    def _get_entropy(self,log_probs, discount_rate=None):
         # assumes distributions are along the last dimension
         infos = log_probs.exp() * log_probs
         entropy = entropy_undiscounted = -infos.sum(-1).mean()
         if discount_rate and discount_rate != 1:
-            sz = [log_probs.size(0)] + [1]*(log_probs.ndimension() - 1)
-            discount = log_probs.data.new(*sz).fill_(1)
-            discount[1:] *= discount_rate
-            discount.cumprod(0, out=discount)
-            infos = infos * Variable(discount)
+            infos *= self._get_discount_mask(log_probs, discount_rate)
             entropy = -infos.sum(-1).mean()
         return entropy, entropy_undiscounted
+
+    def _get_discount_mask(self,seqs, discount_rate):
+        sz = [seqs.size(0)] + [1]*(seqs.ndimension() - 1)
+        discount = seqs.data.new(*sz).fill_(discount_rate)
+        discount[0] = 1
+        return Variable(discount.cumprod(0, out=discount))
