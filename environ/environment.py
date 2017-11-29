@@ -251,14 +251,18 @@ class Environment(object):
                          f'({time.time() - tick:.1f})')
 
     def _forward_d(self, batch, volatile=False, has_init=True):
-        toks, labels = batch
-        toks = Variable(toks.view(-1, toks.size(-1)).cuda(), volatile=volatile)
-        labels = Variable(labels.t()[has_init:].contiguous().cuda(),
-                          volatile=volatile)
+        toks, labels = batch  # N*(T+1)
+        toks = Variable(toks.cuda(), volatile=volatile)
+        labels = Variable(labels[:, has_init:].cuda(), volatile=volatile)  # N*T
 
-        d_log_probs = self.d(toks[:, has_init:])
-        loss = nnf.nll_loss(d_log_probs.view(-1, 2), labels.view(-1),
-                            ignore_index=LABEL_PAD)
+        d_log_probs = self.d(toks[:, has_init:])  # T*N*2
+
+        is_pad = toks[:, has_init:] == 0  # N*T
+        num_nonpad = (1 - is_pad.long()).sum(1)
+        nnp_exp = num_nonpad[:, None].expand(d_log_probs.size()[1:]) - 1
+        fin_log_probs = d_log_probs.gather(0, nnp_exp[None]).squeeze(0)
+        loss = nnf.nll_loss(fin_log_probs, labels[:, 0])
+
         return loss, d_log_probs
 
     def _compute_d_test_acc(self, num_samples=256):
@@ -277,7 +281,7 @@ class Environment(object):
         with common.rand_state(torch.cuda, -1):
             for _ in range(num_test_batches):
                 gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
-                acc_gen += self.compute_acc(self.d(gen_seqs), LABEL_GEN)
+                acc_gen += self.compute_acc(self.d(gen_seqs)[-1], LABEL_GEN)
         acc_gen /= num_test_batches
 
         return acc_real, acc_gen
@@ -285,7 +289,7 @@ class Environment(object):
     def compute_acc(self, probs, label):
         """Computes the accuracy given prob Variable and and label."""
         probs = probs.data if isinstance(probs, Variable) else probs
-        return (probs[3].max(-1)[1] == label).float().mean()
+        return (probs.max(-1)[1] == label).float().mean()
 
     def train_adv(self):
         """Adversarially train G against D."""
