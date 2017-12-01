@@ -51,13 +51,14 @@ class SynthEnvironment(Environment):
         super(SynthEnvironment, self).__init__(opts)
 
         self.ro_init_toks.data.zero_()
-        self.opts.padding_idx = self.opts.eos_idx = None
+        self.opts.padding_idx = self.opts.eos_idx = -1
 
         self.oracle = self._create_oracle().cuda()
         oracle_checksum = sum(p.data.sum() for p in self.oracle.parameters())
         logging.debug(f'#oracle: {oracle_checksum:.3f}')
 
-        self.train_dataset = self._create_gen_dataset(self.oracle, LABEL_REAL)
+        self.train_dataset = self._create_gen_dataset(
+            self.oracle, LABEL_REAL, num_samples=opts.num_gen_samps)
         self.test_dataset = self._create_gen_dataset(
             self.oracle, LABEL_REAL,
             num_samples=len(self.ro_init_toks)*5, seed=-1)
@@ -96,10 +97,10 @@ class SynthEnvironment(Environment):
         """
         toks: [N]*T
         """
-        toks = torch.cat([self.init_toks] + toks).view(len(toks), -1)  # T*N
-        log_probs = self.oracle(toks.t())[:-1]  # T*N*V
+        toks = torch.cat([self.init_toks] + toks).view(len(toks)+1, -1)
+        log_probs = self.oracle(toks.t())[0][:-1]  # T*N*V
         flat_log_probs = log_probs.view(-1, log_probs.size(-1))  # (T*N)*V
-        nll = nnf.nll_loss(flat_log_probs, toks.view(-1)).data[0]
+        nll = nnf.nll_loss(flat_log_probs, toks[1:].view(-1)).data[0]
         if return_probs:
             return nll, log_probs
         return nll

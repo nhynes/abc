@@ -190,7 +190,7 @@ class Environment(object):
             if callable(hook):
                 hook(self, epoch)
 
-    def pretrain_g(self):
+    def pretrain_g(self, hook=None):
         """Pretrains G using maximum-likelihood."""
         logging.info(f'[00] {self._EVAL_METRIC}: '
                      f'{self._compute_eval_metric():.3f}')
@@ -218,6 +218,9 @@ class Environment(object):
                 f'gnorm: {self._get_grad_norm(self.g).data[0]:.2f}  '
                 f'({time.time() - tick:.1f})')
 
+            if callable(hook):
+                hook(self, epoch)
+
     def _forward_g_ml(self, batch, volatile=False):
         """
         batch: (toks: N*T, labels: N)
@@ -226,7 +229,7 @@ class Environment(object):
         return self._forward_seq2seq(lambda toks: self.g(toks[:, :-1])[0],
                                      batch, volatile=volatile)
 
-    def pretrain_d(self):
+    def pretrain_d(self, hook=None):
         """Pretrains D using pretrained G."""
         for epoch in range(1, self.opts.pretrain_d_epochs+1):
             tick = time.time()
@@ -249,6 +252,9 @@ class Environment(object):
             logging.info(f'[{epoch:02d}] loss: {train_loss:.3f}  '
                          f'acc: real={acc_real:.2f} gen={acc_gen:.2f}  '
                          f'({time.time() - tick:.1f})')
+
+            if callable(hook):
+                hook(self, epoch)
 
     def _forward_d(self, batch, volatile=False, has_init=True):
         toks, labels = batch

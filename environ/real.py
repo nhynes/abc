@@ -65,7 +65,7 @@ class NLEnvironment(Environment):
             for net in (self.g, self.d):
                 _set_w2v(net.tok_emb)
             if opts.exploration_bonus:
-                _set_w2v(self.hasher.encoder.tok_emb)
+                _set_w2v(self.hasher.tok_emb)
 
         self.train_dataset = dataset.NLDataset(part='train', **vars(opts))
         self.test_dataset = dataset.NLDataset(part='val', **vars(opts))
