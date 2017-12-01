@@ -51,7 +51,7 @@ class Discriminator(nn.Module):
 
         padding_idx = None if kwargs.get('env') == environ.SYNTH else 0
         self.tok_emb = nn.Embedding(vocab_size, tok_emb_dim,
-                                     padding_idx=padding_idx)
+                                    padding_idx=padding_idx)
 
         self.stdev = nn.Parameter(torch.randn(1) * 0.1)
 
@@ -65,24 +65,27 @@ class Discriminator(nn.Module):
         return itertools.chain(*[
             m.parameters() for m in self.children() if m != self.tok_emb])
 
-    def forward(self, toks):
+    def forward(self, toks, return_embs=False):
         """
         toks: N*T or [N*1]*T
         """
         if isinstance(toks, (list, tuple)):
             toks = torch.cat(toks, -1)
-        logits = self._forward(toks)
+        logits, embs = self._forward(toks)
         fuzz = Variable(logits.data.new(logits.size()).normal_()) * self.stdev
-        return nnf.log_softmax(logits + fuzz, dim=1)
+        log_probs = nnf.log_softmax(logits + fuzz, dim=1)
+        if return_embs:
+            return log_probs, Variable(embs.data, requires_grad=True)
+        return log_probs
 
 
 
-class CNNDiscriminator(Discriminator):
+class _CNNDiscriminator(Discriminator):
     """A CNN token discriminator."""
 
     def __init__(self, tok_emb_dim, filter_widths, num_filters, dropout,
                  **kwargs):
-        super(CNNDiscriminator, self).__init__(
+        super(_CNNDiscriminator, self).__init__(
             tok_emb_dim=tok_emb_dim, **kwargs)
 
         assert len(filter_widths) == len(num_filters)
@@ -102,29 +105,26 @@ class CNNDiscriminator(Discriminator):
             _l2_reg(nn.Linear(emb_dim, 2)))
 
     def _forward(self, toks):
-        """ toks: N*T """
-        embs = self.tok_emb(toks).transpose(1, 2)  # N*d_wemb*T
+        """
+        toks_embs: N*T*d_wemb
+        """
+        tok_embs = self.tok_emb(toks).transpose(1, 2).detach()  # N*d_wemb*T
 
-        layer_acts = []  # num_layers*[N*c]
-        for layer in self.cnn_layers:
-            # layer_acts.append(layer(embs).max(-1)[0])
-            layer_acts.append(layer(embs).mean(-1))
-        layers_acts = torch.cat(layer_acts, -1)  # N*sum(num_filters)
+        layer_acts = torch.cat([  # N*sum(num_filters)
+            layer(tok_embs).sum(-1) for layer in self.cnn_layers], -1)
 
-        return self.logits(layers_acts)
+        return self.logits(layer_acts), tok_embs
 
 
-class RNNDiscriminator(Discriminator):
+class _RNNDiscriminator(Discriminator):
     """An RNN token discriminator."""
 
     def __init__(self, tok_emb_dim, rnn_dim, **kwargs):
-        super(RNNDiscriminator, self).__init__(tok_emb_dim=tok_emb_dim,
-                                               **kwargs)
+        super(_RNNDiscriminator, self).__init__(tok_emb_dim=tok_emb_dim,
+                                                **kwargs)
 
-        self.rnn = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=2,
-                           bidirectional=True)
-
-        self.logits = nn.Linear(rnn_dim * 2, 2)
+        self.rnn = nn.LSTM(tok_emb_dim, rnn_dim, num_layers=3)
+        self.logits = nn.Linear(rnn_dim, 2)
 
     def _forward(self, toks):
         """
@@ -132,12 +132,17 @@ class RNNDiscriminator(Discriminator):
         """
         tok_embs = self.tok_emb(toks).transpose(0, 1)  # T*N*d_wemb
         seq_embs, _ = self.rnn(tok_embs)
-        return self.logits(seq_embs[-1])
+        masked_embs = seq_embs.masked_fill(  # T*N*rnn_dim
+            (toks.t() == 0)[..., None].expand_as(seq_embs), 0)
+        num_non_pad = (toks != 0).float().sum(1, keepdim=True)  # N*1
+        pre_logits = nnf.relu(masked_embs).sum(0) / num_non_pad
+        logits = self.logits(pre_logits)
+        return logits, masked_embs
 
 
 def create(d_type, d_tok_emb_dim, **opts):
     """Creates a token discriminator."""
-    d_cls = RNNDiscriminator if d_type == RNN else CNNDiscriminator
+    d_cls = _RNNDiscriminator if d_type == RNN else _CNNDiscriminator
     return d_cls(tok_emb_dim=d_tok_emb_dim, **opts)
 
 
@@ -152,7 +157,7 @@ def test_cnn_discriminator():
     dropout = 0.25
     debug = True
 
-    d = CNNDiscriminator(**locals())
+    d = _CNNDiscriminator(**locals())
 
     preds = d(Variable(torch.LongTensor(batch_size, 20).fill_(1)))
     assert preds.size(0) == batch_size
@@ -172,7 +177,7 @@ def test_rnn_discriminator():
     rnn_dim = 4
     debug = True
 
-    d = RNNDiscriminator(**locals())
+    d = _RNNDiscriminator(**locals())
 
     preds = d(Variable(torch.LongTensor(batch_size, 20).fill_(1)))
     assert preds.size(0) == batch_size
