@@ -103,7 +103,8 @@ def load_log(log_path):
                 for colname, val in zip(colnames, match.groups()):
                     cols[colname].append(val)
     log_df = pd.DataFrame.from_dict(cols)
-    log_df = log_df.set_index('iter').astype(float)
+    log_df = log_df.astype(float)
+    log_df.index = log_df.iter.astype(int)
     return log_df
 
 
@@ -120,6 +121,6 @@ def do_plot(get_data, logs, filt=None, baseline=None):
     plt.legend()
 
 
-def plot_ts(col, *args, **kwargs):
+def plot_ts(col, logs, *args, **kwargs):
     """Plots a column from logs as a time series."""
-    do_plot(lambda name, log: log[col], *args, **kwargs)
+    do_plot(lambda name, log: log[col], logs, *args, **kwargs)
