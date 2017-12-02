@@ -51,7 +51,7 @@ class Environment(object):
         self.init_toks = self.ro_init_toks[:opts.batch_size].detach()
 
         self._labels = torch.cuda.LongTensor(self.opts.batch_size)
-        # self._inv_idx = torch.arange(opts.batch_size-1, -1, -1).long().cuda()
+        # self._inv_idx = torch.arange(opts.seqlen-1, -1, -1).long().cuda()
 
     @classmethod
     def get_opt_parser(cls):
@@ -325,8 +325,8 @@ class Environment(object):
             loss_d.backward(create_graph=bool(self.opts.grad_reg))
 
             gnormg, gnormd = map(self._get_grad_norm, (self.g, self.d))
-            gnorm = (gnormg * (self.opts.grad_reg * 1.) +
-                     gnormd * (self.opts.grad_reg * 1))
+            gnorm = (gnormg * (self.opts.grad_reg * 50.) +
+                     gnormd * (self.opts.grad_reg * 0.1))
             if self.opts.grad_reg:
                 gnorm.backward()
                 self.optim_g.step()
@@ -356,7 +356,7 @@ class Environment(object):
                 self.init_toks, self.opts.seqlen,
                 temperature=self.opts.temperature)
             gen_seqs = torch.cat(gen_seqs, -1)  # N*T
-            if i == 0 and replay_buffer:
+            if i == 0 and replay_buffer is not None:
                 replay_buffer.add_samples(gen_seqs)
 
             gen_log_probs = torch.stack(gen_log_probs)  # T*N*V
