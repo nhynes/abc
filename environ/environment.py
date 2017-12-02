@@ -343,10 +343,9 @@ class Environment(object):
                     f'({time.time() - tick:.1f})')
 
     def _init_state_counter(self):
-        self.state_counter.train()
         for toks, _ in self._create_dataloader(self.train_dataset):
-            self.state_counter(Variable(toks.cuda(), volatile=True))
-        self.state_counter.eval()
+            self.state_counter(Variable(toks.cuda(), volatile=True),
+                               'counts_train')
 
     def _train_adv_g(self, replay_buffer=None):
         losses = []

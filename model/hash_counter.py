@@ -15,30 +15,29 @@ class HashCounter(nn.Module):
         self.hash_fn = hash_fn
 
         self.register_buffer('counts', torch.zeros(num_hash_buckets))
-        self.register_buffer('counts_train', torch.zeros(num_hash_buckets))
 
         self.register_buffer('_ones', torch.ones(1))
         self.register_buffer('_powers_of_two',
                              2**torch.arange(self.code_len-1, -1, -1))
 
-    def forward(self, toks, **unused_kwargs):
-        """ Accumulates into `counts` or `counts_train` depending on mode.
+    def forward(self, items, accumulator='counts', **unused_kwargs):
+        """ Accumulates hashed item counts.
 
-        toks: N*T
+        items: N*(size of single item accepted by hash_fn)
+        accumulator: the name of an accumulator
 
         Returns: A LongTensor of hash_bucket indices: N
         """
-        ones = self._ones.expand(toks.size(0))
-        acc = self.counts_train if self.training else self.counts
+        ones = self._ones.expand(items.size(0))
+        acc = self._buffers.get(accumulator, torch.zeros_like(self.counts))
+        if accumulator not in self._buffers:
+            self.register_buffer(accumulator, acc)
 
-        hash_codes = self.hash_fn(toks).data  # N*code_len
+        hash_codes = self.hash_fn(items).data  # N*code_len
         hash_buckets = (hash_codes @ self._powers_of_two).long()  # N
         acc.put_(hash_buckets, ones, accumulate=True)
 
         return hash_buckets
-
-    def train(self, mode=True):
-        self.training = mode
 
 
 def create(hash_fn, **opts):
@@ -85,15 +84,14 @@ def test_simhash_table():
     hash_fn.set_codes(expected_counts_train)
     toks = Variable(torch.LongTensor(sum(expected_counts_train), 4))
 
-    assert (simhash_table(toks) == hash_fn.buckets).all()
-    assert (simhash_table.counts_train.numpy() == expected_counts_train).all()
+    assert (simhash_table(toks, 'counts2') == hash_fn.buckets).all()
+    assert (simhash_table.counts2.numpy() == expected_counts_train).all()
     assert (simhash_table.counts == 0).all()
 
     expected_counts_test = [4, 3, 2, 1]
     hash_fn.set_codes(expected_counts_test)
-    simhash_table.eval()
     toks = Variable(torch.LongTensor(sum(expected_counts_test), 4))
 
     assert (simhash_table(toks) == hash_fn.buckets).all()
-    assert (simhash_table.counts_train.numpy() == expected_counts_train).all()
+    assert (simhash_table.counts2.numpy() == expected_counts_train).all()
     assert (simhash_table.counts.numpy() == expected_counts_test).all()
