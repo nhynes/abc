@@ -279,7 +279,11 @@ class Environment(object):
         with common.rand_state(torch.cuda, -1):
             for _ in range(num_test_batches):
                 gen_seqs, _ = self.g.rollout(self.init_toks, self.opts.seqlen)
-                acc_gen += self.compute_acc(self.d(gen_seqs), LABEL_GEN)
+                init_gen_seqs = torch.cat([self.init_toks] + gen_seqs, -1)
+                dataset.GenDataset.mask_gen_seqs_(init_gen_seqs.data,
+                                                  self.opts.eos_idx)
+                acc_gen += self.compute_acc(self.d(init_gen_seqs[:, 1:]),
+                                            LABEL_GEN)
         acc_gen /= num_test_batches
 
         return acc_real, acc_gen
