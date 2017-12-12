@@ -35,7 +35,7 @@ class _RNNEncoder(nn.Module):
         code_embs = self.precoder(seq_embs[-1]).view(-1, self.code_len, 2)
         logits = nnf.log_softmax(code_embs, dim=2)
 
-        codes = bottle(nnf.gumbel_softmax, logits, hard=False)[:, :, 0]
+        codes = bottle(nnf.gumbel_softmax, logits, hard=True)[:, :, 0]
         # codes = precodes.max(-1)[1].float()  # doesn't train very well!
         return codes.contiguous(), logits
 
