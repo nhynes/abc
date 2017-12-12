@@ -12,7 +12,7 @@ class ReplayBuffer(torch.utils.data.ConcatDataset):
     def __init__(self, max_history, label, **unused_kwargs):
         # pylint: disable=super-init-not-called
         self.datasets = deque(maxlen=max_history)
-        self.cummulative_sizes = [0]  # [sic]
+        self.cumulative_sizes = [0]
         self.label = label
 
     def add_samples(self, samples):
@@ -25,7 +25,7 @@ class ReplayBuffer(torch.utils.data.ConcatDataset):
         dataset = torch.utils.data.TensorDataset(
             samples, torch.LongTensor(len(samples)).fill_(self.label))
         self.datasets.append(dataset)
-        self.cummulative_sizes = self.cumsum(self.datasets)
+        self.cumulative_sizes = self.cumsum(self.datasets)
 
 
 def test_replay_buffer():
